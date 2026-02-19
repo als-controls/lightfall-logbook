@@ -66,8 +66,18 @@ fi
 # Fix ownership
 chown -R "$APP_USER:$APP_USER" "$APP_DIR"
 
+# --- Firewall ---
+echo "[6/7] Opening firewall port 8000..."
+if command -v firewall-cmd &>/dev/null; then
+    firewall-cmd --add-port=8000/tcp --permanent 2>/dev/null || true
+    firewall-cmd --reload 2>/dev/null || true
+    echo "  Port 8000/tcp opened"
+else
+    echo "  firewalld not found, skipping (ensure port 8000 is open)"
+fi
+
 # --- systemd ---
-echo "[6/6] Installing systemd service..."
+echo "[7/7] Installing systemd service..."
 cp "$APP_DIR/deploy/$SERVICE_NAME.service" "/etc/systemd/system/$SERVICE_NAME.service"
 systemctl daemon-reload
 systemctl enable "$SERVICE_NAME"

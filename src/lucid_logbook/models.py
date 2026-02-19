@@ -110,6 +110,7 @@ class FragmentRow(Base):
 class FragmentCreate(BaseModel):
     """Payload for creating a new fragment."""
 
+    id: uuid.UUID | None = None  # client can supply ID for offline-first sync
     kind: str = "text"
     subtype: str | None = None
     content: str = ""
@@ -141,6 +142,7 @@ class FragmentSchema(BaseModel):
 
 
 class EntryCreate(BaseModel):
+    id: uuid.UUID | None = None  # client can supply ID for offline-first sync
     title: str | None = None
     tags: list[str] = Field(default_factory=list)
 
