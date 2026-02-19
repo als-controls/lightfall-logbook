@@ -10,7 +10,7 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from litestar import Controller, Response, delete, get, post, put
+from litestar import Controller, delete, get, post, put
 from litestar.di import Provide
 from litestar.exceptions import NotAuthorizedException, NotFoundException, ValidationException
 from sqlalchemy import select
@@ -213,13 +213,13 @@ class LogbookController(Controller):
         await db_session.refresh(fragment)
         return FragmentSchema.model_validate(fragment)
 
-    @delete("/fragments/{fragment_id:uuid}")
+    @delete("/fragments/{fragment_id:uuid}", status_code=204)
     async def delete_fragment(
         self,
         fragment_id: uuid.UUID,
         request: Any,
         db_session: AsyncSession,
-    ) -> Response:
+    ) -> None:
         _get_user_id(request)
         result = await db_session.execute(
             select(FragmentRow).where(FragmentRow.id == fragment_id)
@@ -231,4 +231,3 @@ class LogbookController(Controller):
             raise ValidationException("Only text fragments can be deleted")
         await db_session.delete(fragment)
         await db_session.commit()
-        return Response(content=None, status_code=204)
