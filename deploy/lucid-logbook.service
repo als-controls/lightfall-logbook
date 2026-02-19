@@ -1,0 +1,21 @@
+[Unit]
+Description=LUCID Logbook API
+After=network.target
+
+[Service]
+Type=simple
+User=lucid-logbook
+Group=lucid-logbook
+WorkingDirectory=/opt/lucid-logbook
+EnvironmentFile=/opt/lucid-logbook/.env
+ExecStart=/opt/lucid-logbook/.venv/bin/uvicorn lucid_logbook.app:app \
+    --host ${HOST:-0.0.0.0} \
+    --port ${PORT:-8000} \
+    --workers ${WORKERS:-2}
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
