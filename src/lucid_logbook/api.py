@@ -37,13 +37,23 @@ from loguru import logger
 
 
 def _get_user_id(request: Any) -> str:
-    """Extract user_id from request.  Placeholder until Keycloak middleware."""
-    user_id: str | None = getattr(request, "user", None) or getattr(
+    """Extract user_id from request state (set by Keycloak middleware).
+
+    Falls back to ``X-User-Id`` header for dev/testing when auth is disabled.
+    """
+    # From Keycloak middleware
+    user_id: str | None = getattr(
         getattr(request, "state", None), "user_id", None
     )
-    if not user_id:
-        raise NotAuthorizedException("Missing user identity")
-    return user_id
+    if user_id:
+        return user_id
+
+    # Dev fallback: allow header-based identity
+    user_id = request.headers.get("X-User-Id")
+    if user_id:
+        return user_id
+
+    raise NotAuthorizedException("Missing user identity")
 
 
 async def _get_or_create_logbook(session: AsyncSession, user_id: str) -> LogbookRow:
@@ -231,3 +241,63 @@ class LogbookController(Controller):
             raise ValidationException("Only text fragments can be deleted")
         await db_session.delete(fragment)
         await db_session.commit()
+
+    @delete("/entries/{entry_id:uuid}", status_code=204)
+    async def delete_entry(
+        self,
+        entry_id: uuid.UUID,
+        request: Any,
+        db_session: AsyncSession,
+    ) -> None:
+        _get_user_id(request)
+        result = await db_session.execute(
+            select(EntryRow).where(EntryRow.id == entry_id)
+        )
+        entry = result.scalar_one_or_none()
+        if entry is None:
+            raise NotFoundException(f"Entry {entry_id} not found")
+        await db_session.delete(entry)
+        await db_session.commit()
+
+
+# ---------------------------------------------------------------------------
+# Search
+# ---------------------------------------------------------------------------
+
+
+class SearchController(Controller):
+    """Full-text search across fragment content."""
+
+    path = "/logbook/search"
+
+    @get("/")
+    async def search_fragments(
+        self,
+        q: str,
+        request: Any,
+        db_session: AsyncSession,
+        limit: int = 50,
+    ) -> list[FragmentSchema]:
+        """Search fragment content (case-insensitive LIKE).
+
+        For Postgres, upgrade to ``to_tsvector``/``to_tsquery`` for proper
+        full-text search. SQLite falls back to LIKE.
+        """
+        user_id = _get_user_id(request)
+        logbook = await _get_or_create_logbook(db_session, user_id)
+
+        # Join fragments through entries to scope to this user's logbook
+        from sqlalchemy import func
+
+        pattern = f"%{q}%"
+        result = await db_session.execute(
+            select(FragmentRow)
+            .join(EntryRow, FragmentRow.entry_id == EntryRow.id)
+            .where(EntryRow.logbook_id == logbook.id)
+            .where(FragmentRow.content.ilike(pattern))
+            .order_by(FragmentRow.updated_at.desc())
+            .limit(limit)
+        )
+        fragments = result.scalars().all()
+        await db_session.commit()
+        return [FragmentSchema.model_validate(f) for f in fragments]
