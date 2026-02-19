@@ -29,6 +29,7 @@ from lucid_logbook.models import (
     LogbookSchema,
 )
 from loguru import logger
+from lucid_logbook.auth import keycloak_auth_enabled
 
 
 # ---------------------------------------------------------------------------
@@ -52,6 +53,10 @@ def _get_user_id(request: Any) -> str:
     user_id = request.headers.get("X-User-Id")
     if user_id:
         return user_id
+
+    # When Keycloak is disabled, fall back to a default dev user
+    if not keycloak_auth_enabled():
+        return "dev-user"
 
     raise NotAuthorizedException("Missing user identity")
 
