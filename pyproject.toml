@@ -21,8 +21,6 @@ dependencies = [
 postgres = ["asyncpg>=0.29"]
 keycloak = ["PyJWT[crypto]>=2.8"]
 all = ["asyncpg>=0.29", "PyJWT[crypto]>=2.8"]
-
-[project.optional-dependencies]
 dev = [
     "pytest",
     "pytest-asyncio",
