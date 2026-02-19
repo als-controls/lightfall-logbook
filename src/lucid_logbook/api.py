@@ -29,6 +29,7 @@ from lucid_logbook.models import (
     LogbookSchema,
 )
 from loguru import logger
+from lucid_logbook.auth import keycloak_auth_enabled
 
 
 # ---------------------------------------------------------------------------
@@ -52,6 +53,10 @@ def _get_user_id(request: Any) -> str:
     user_id = request.headers.get("X-User-Id")
     if user_id:
         return user_id
+
+    # When Keycloak is disabled, fall back to a default dev user
+    if not keycloak_auth_enabled():
+        return "dev-user"
 
     raise NotAuthorizedException("Missing user identity")
 
@@ -94,7 +99,10 @@ class LogbookController(Controller):
     ) -> EntrySchema:
         user_id = _get_user_id(request)
         logbook = await _get_or_create_logbook(db_session, user_id)
-        entry = EntryRow(logbook_id=logbook.id, title=data.title, tags=data.tags)
+        kwargs: dict[str, Any] = {"logbook_id": logbook.id, "title": data.title, "tags": data.tags}
+        if data.id is not None:
+            kwargs["id"] = data.id
+        entry = EntryRow(**kwargs)
         session_add = db_session.add
         session_add(entry)
         await db_session.flush()
@@ -184,14 +192,17 @@ class LogbookController(Controller):
             max_pos = max((f.position for f in entry.fragments), default=-1)
             position = max_pos + 1
 
-        fragment = FragmentRow(
-            entry_id=entry_id,
-            position=position,
-            kind=data.kind,
-            subtype=data.subtype,
-            content=data.content,
-            data=data.data,
-        )
+        frag_kwargs: dict[str, Any] = {
+            "entry_id": entry_id,
+            "position": position,
+            "kind": data.kind,
+            "subtype": data.subtype,
+            "content": data.content,
+            "data": data.data,
+        }
+        if data.id is not None:
+            frag_kwargs["id"] = data.id
+        fragment = FragmentRow(**frag_kwargs)
         db_session.add(fragment)
         await db_session.commit()
         await db_session.refresh(fragment)
