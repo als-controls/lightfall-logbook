@@ -83,16 +83,10 @@ class KeycloakAuthMiddleware(AbstractMiddleware):
     Skips the ``/health`` endpoint.
     """
 
-    scopes = {"/health"}  # excluded paths
+    exclude = ["/health"]
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
-            await self.app(scope, receive, send)
-            return
-
-        # Skip excluded paths
-        path = scope.get("path", "")
-        if path in self.scopes:
             await self.app(scope, receive, send)
             return
 
