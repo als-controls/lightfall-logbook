@@ -10,11 +10,17 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from litestar import Controller, delete, get, post, put
+from litestar import Controller, Request, delete, get, post, put
+from litestar.datastructures import UploadFile
 from litestar.di import Provide
+from litestar.enums import RequestEncodingType
 from litestar.exceptions import NotAuthorizedException, NotFoundException, ValidationException
+from litestar.params import Body
+from litestar.response import Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from lucid_logbook.image_store import ImageStore, ImageStoreError
 
 from lucid_logbook.models import (
     EntryCreate,
@@ -248,8 +254,14 @@ class LogbookController(Controller):
         fragment = result.scalar_one_or_none()
         if fragment is None:
             raise NotFoundException(f"Fragment {fragment_id} not found")
-        if fragment.kind != "text":
-            raise ValidationException("Only text fragments can be deleted")
+        if fragment.kind not in ("text", "image"):
+            raise ValidationException("Only text and image fragments can be deleted")
+
+        # Clean up image file if this is an image fragment
+        if fragment.kind == "image" and fragment.data and "image_id" in fragment.data:
+            image_store: ImageStore = request.app.state.image_store
+            image_store.delete(fragment.data["image_id"])
+
         await db_session.delete(fragment)
         await db_session.commit()
 
@@ -312,3 +324,57 @@ class SearchController(Controller):
         fragments = result.scalars().all()
         await db_session.commit()
         return [FragmentSchema.model_validate(f) for f in fragments]
+
+
+# ---------------------------------------------------------------------------
+# Images
+# ---------------------------------------------------------------------------
+
+
+class ImageController(Controller):
+    """Image upload/download/delete endpoints."""
+
+    path = "/logbook/images"
+
+    @post("/", status_code=201)
+    async def upload_image(
+        self,
+        request: Request,
+        data: UploadFile = Body(media_type=RequestEncodingType.MULTI_PART),
+    ) -> dict:
+        image_store: ImageStore = request.app.state.image_store
+        content = await data.read()
+        mime_type = data.content_type or "application/octet-stream"
+
+        try:
+            image_id = image_store.save(content, mime_type)
+        except ImageStoreError as e:
+            raise ValidationException(str(e))
+
+        return {
+            "image_id": image_id,
+            "mime_type": mime_type,
+            "size_bytes": len(content),
+        }
+
+    @get("/{image_id:str}")
+    async def download_image(self, request: Request, image_id: str) -> Response:
+        image_store: ImageStore = request.app.state.image_store
+
+        try:
+            data, mime_type = image_store.load(image_id)
+        except ImageStoreError:
+            raise NotFoundException(f"Image not found: {image_id}")
+
+        return Response(
+            content=data,
+            media_type=mime_type,
+            headers={"Cache-Control": "max-age=86400"},
+        )
+
+    @delete("/{image_id:str}", status_code=204)
+    async def delete_image(self, request: Request, image_id: str) -> None:
+        image_store: ImageStore = request.app.state.image_store
+        deleted = image_store.delete(image_id)
+        if not deleted:
+            raise NotFoundException(f"Image not found: {image_id}")
