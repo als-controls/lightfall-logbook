@@ -65,14 +65,21 @@ def test_write_schema_accepts_any_json():
     UserSettingWrite(value=None)
 
 
-def test_schema_round_trip():
+@pytest.mark.asyncio
+async def test_schema_round_trip(session):
+    """After a real DB round-trip, UserSettingSchema validates with a real updated_at."""
     row = UserSettingRow(
         user_id="bob",
         beamline="11.0.1",
         key="favorite_devices",
         value=["d1", "d2"],
     )
+    session.add(row)
+    await session.commit()
+    await session.refresh(row)
+
     schema = UserSettingSchema.model_validate(row, from_attributes=True)
     assert schema.user_id == "bob"
     assert schema.beamline == "11.0.1"
     assert schema.value == ["d1", "d2"]
+    assert isinstance(schema.updated_at, datetime)

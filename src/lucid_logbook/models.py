@@ -210,4 +210,4 @@ class UserSettingSchema(BaseModel):
     beamline: str
     key: str
     value: Any
-    updated_at: datetime | None = None
+    updated_at: datetime
