@@ -388,6 +388,30 @@ class ImageController(Controller):
 # ---------------------------------------------------------------------------
 
 
+async def _profile_image_id_post_write(
+    *, request: Any, old_value: Any, new_value: Any, **_: Any
+) -> None:
+    """When profile_image_id is changed, delete the previous image's bytes.
+
+    Failures here are caught at the call site (in put_setting); we log and
+    move on so a missing-blob doesn't masquerade as a failed write.
+    """
+    if not old_value or old_value == new_value:
+        return
+    image_store: ImageStore = request.app.state.image_store
+    try:
+        image_store.delete(old_value)
+    except Exception as e:
+        logger.warning(
+            "Failed to delete old profile image {}: {}", old_value, e
+        )
+
+
+_SETTINGS_POST_WRITE_HOOKS: dict[str, Any] = {
+    "profile_image_id": _profile_image_id_post_write,
+}
+
+
 async def _run_settings_post_write_hook(
     *,
     request: Any,
@@ -397,11 +421,16 @@ async def _run_settings_post_write_hook(
     old_value: Any,
     new_value: Any,
 ) -> None:
-    """Dispatch to any registered post-write hook for a setting key.
-
-    Task 4 plugs the profile_image_id hook in here.
-    """
-    return None
+    hook = _SETTINGS_POST_WRITE_HOOKS.get(key)
+    if hook is None:
+        return
+    await hook(
+        request=request,
+        user_id=user_id,
+        beamline=beamline,
+        old_value=old_value,
+        new_value=new_value,
+    )
 
 
 class SettingsController(Controller):
@@ -507,3 +536,25 @@ class SettingsController(Controller):
                 user_id,
             )
         return UserSettingSchema.model_validate(row)
+
+    @delete("/{key:str}", status_code=204)
+    async def delete_setting(
+        self,
+        key: str,
+        request: Any,
+        db_session: AsyncSession,
+        beamline: str = "",
+    ) -> None:
+        user_id = _get_user_id(request)
+        result = await db_session.execute(
+            select(UserSettingRow).where(
+                UserSettingRow.user_id == user_id,
+                UserSettingRow.beamline == beamline,
+                UserSettingRow.key == key,
+            )
+        )
+        row = result.scalar_one_or_none()
+        if row is None:
+            raise NotFoundException(f"Setting {key!r} not found")
+        await db_session.delete(row)
+        await db_session.commit()

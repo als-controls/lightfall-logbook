@@ -148,3 +148,29 @@ async def test_put_with_beamline_returns_correct_scope(client):
     )
     assert g_bl.status_code == 200
     assert g_bl.json()["value"] == "bl-value"
+
+
+@pytest.mark.asyncio
+async def test_delete_removes_row(client):
+    await client.put("/logbook/settings/k", json={"value": "v"}, headers=ALICE)
+    r = await client.delete("/logbook/settings/k", headers=ALICE)
+    assert r.status_code == 204
+
+    r2 = await client.get("/logbook/settings/k", headers=ALICE)
+    assert r2.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_delete_unknown_returns_404(client):
+    r = await client.delete("/logbook/settings/never-set", headers=ALICE)
+    assert r.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_delete_does_not_affect_other_users(client):
+    await client.put("/logbook/settings/k", json={"value": "v"}, headers=ALICE)
+    r = await client.delete("/logbook/settings/k", headers=BOB)
+    assert r.status_code == 404
+    # Alice's still there
+    r2 = await client.get("/logbook/settings/k", headers=ALICE)
+    assert r2.status_code == 200
