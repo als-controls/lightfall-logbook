@@ -124,3 +124,27 @@ async def test_put_does_not_leak_across_users(client):
     b = await client.get("/logbook/settings/theme", headers=BOB)
     assert a.json()["value"] == "alice-dark"
     assert b.json()["value"] == "bob-light"
+
+
+@pytest.mark.asyncio
+async def test_put_with_beamline_returns_correct_scope(client):
+    """A PUT with a beamline body field round-trips that beamline through GET."""
+    r = await client.put(
+        "/logbook/settings/k",
+        json={"value": "bl-value", "beamline": "11.0.1"},
+        headers=ALICE,
+    )
+    assert r.status_code == 200
+    assert r.json()["beamline"] == "11.0.1"
+    assert r.json()["value"] == "bl-value"
+
+    # The same key under the global scope should still 404
+    g = await client.get("/logbook/settings/k", headers=ALICE)
+    assert g.status_code == 404
+
+    # But it's present under the beamline scope
+    g_bl = await client.get(
+        "/logbook/settings/k?beamline=11.0.1", headers=ALICE
+    )
+    assert g_bl.status_code == 200
+    assert g_bl.json()["value"] == "bl-value"

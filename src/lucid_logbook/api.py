@@ -458,6 +458,9 @@ class SettingsController(Controller):
         db_session: AsyncSession,
     ) -> UserSettingSchema:
         user_id = _get_user_id(request)
+        # TODO: SELECT-then-INSERT/UPDATE is not atomic under Postgres;
+        # rewrite as ON CONFLICT DO UPDATE before Postgres promotion.
+        # SQLite serializes writes so this is safe in current deployments.
         result = await db_session.execute(
             select(UserSettingRow).where(
                 UserSettingRow.user_id == user_id,
@@ -483,13 +486,24 @@ class SettingsController(Controller):
         await db_session.commit()
         await db_session.refresh(row)
 
-        # Run any post-write hook registered for this key (Task 4 fills the registry).
-        await _run_settings_post_write_hook(
-            request=request,
-            user_id=user_id,
-            beamline=data.beamline,
-            key=key,
-            old_value=old_value,
-            new_value=data.value,
-        )
+        # Run any post-write hook registered for this key. Hook failures
+        # MUST NOT fail the response — the write is already durable, and
+        # hooks handle side-effects (e.g., orphan-blob cleanup) that are
+        # safer to log-and-move-on than to surface as a 500.
+        try:
+            await _run_settings_post_write_hook(
+                request=request,
+                user_id=user_id,
+                beamline=data.beamline,
+                key=key,
+                old_value=old_value,
+                new_value=data.value,
+            )
+        except Exception:
+            logger.exception(
+                "Post-write hook failed for key={!r} user={!r}; "
+                "write already committed",
+                key,
+                user_id,
+            )
         return UserSettingSchema.model_validate(row)
