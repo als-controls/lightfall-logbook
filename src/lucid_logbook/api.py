@@ -35,6 +35,7 @@ from lucid_logbook.models import (
     LogbookSchema,
     UserSettingRow,
     UserSettingSchema,
+    UserSettingWrite,
 )
 from loguru import logger
 from lucid_logbook.auth import keycloak_auth_enabled
@@ -387,6 +388,22 @@ class ImageController(Controller):
 # ---------------------------------------------------------------------------
 
 
+async def _run_settings_post_write_hook(
+    *,
+    request: Any,
+    user_id: str,
+    beamline: str,
+    key: str,
+    old_value: Any,
+    new_value: Any,
+) -> None:
+    """Dispatch to any registered post-write hook for a setting key.
+
+    Task 4 plugs the profile_image_id hook in here.
+    """
+    return None
+
+
 class SettingsController(Controller):
     """Per-user key/value settings, optionally scoped to a beamline."""
 
@@ -430,4 +447,49 @@ class SettingsController(Controller):
         if row is None:
             raise NotFoundException(f"Setting {key!r} not found")
         await db_session.commit()
+        return UserSettingSchema.model_validate(row)
+
+    @put("/{key:str}")
+    async def put_setting(
+        self,
+        key: str,
+        data: UserSettingWrite,
+        request: Any,
+        db_session: AsyncSession,
+    ) -> UserSettingSchema:
+        user_id = _get_user_id(request)
+        result = await db_session.execute(
+            select(UserSettingRow).where(
+                UserSettingRow.user_id == user_id,
+                UserSettingRow.beamline == data.beamline,
+                UserSettingRow.key == key,
+            )
+        )
+        row = result.scalar_one_or_none()
+        old_value = row.value if row is not None else None
+
+        if row is None:
+            row = UserSettingRow(
+                user_id=user_id,
+                beamline=data.beamline,
+                key=key,
+                value=data.value,
+            )
+            db_session.add(row)
+        else:
+            row.value = data.value
+            # updated_at refreshes via the column's onupdate hook on commit
+
+        await db_session.commit()
+        await db_session.refresh(row)
+
+        # Run any post-write hook registered for this key (Task 4 fills the registry).
+        await _run_settings_post_write_hook(
+            request=request,
+            user_id=user_id,
+            beamline=data.beamline,
+            key=key,
+            old_value=old_value,
+            new_value=data.value,
+        )
         return UserSettingSchema.model_validate(row)
