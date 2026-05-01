@@ -33,6 +33,9 @@ from lucid_logbook.models import (
     FragmentUpdate,
     LogbookRow,
     LogbookSchema,
+    UserSettingRow,
+    UserSettingSchema,
+    UserSettingWrite,
 )
 from loguru import logger
 from lucid_logbook.auth import keycloak_auth_enabled
@@ -378,3 +381,54 @@ class ImageController(Controller):
         deleted = image_store.delete(image_id)
         if not deleted:
             raise NotFoundException(f"Image not found: {image_id}")
+
+
+# ---------------------------------------------------------------------------
+# Settings
+# ---------------------------------------------------------------------------
+
+
+class SettingsController(Controller):
+    """Per-user key/value settings, optionally scoped to a beamline."""
+
+    path = "/logbook/settings"
+
+    @get("/")
+    async def list_settings(
+        self,
+        request: Any,
+        db_session: AsyncSession,
+        beamline: str = "",
+    ) -> dict[str, Any]:
+        """Return {key: value, ...} for the requesting user in this scope."""
+        user_id = _get_user_id(request)
+        result = await db_session.execute(
+            select(UserSettingRow)
+            .where(UserSettingRow.user_id == user_id)
+            .where(UserSettingRow.beamline == beamline)
+        )
+        rows = result.scalars().all()
+        await db_session.commit()
+        return {row.key: row.value for row in rows}
+
+    @get("/{key:str}")
+    async def get_setting(
+        self,
+        key: str,
+        request: Any,
+        db_session: AsyncSession,
+        beamline: str = "",
+    ) -> UserSettingSchema:
+        user_id = _get_user_id(request)
+        result = await db_session.execute(
+            select(UserSettingRow).where(
+                UserSettingRow.user_id == user_id,
+                UserSettingRow.beamline == beamline,
+                UserSettingRow.key == key,
+            )
+        )
+        row = result.scalar_one_or_none()
+        if row is None:
+            raise NotFoundException(f"Setting {key!r} not found")
+        await db_session.commit()
+        return UserSettingSchema.model_validate(row)
