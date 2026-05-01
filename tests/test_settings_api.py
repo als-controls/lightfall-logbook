@@ -49,6 +49,19 @@ async def test_get_all_scopes_to_user(client):
     assert resp.json() == {}
 
 
+@pytest.mark.skip(reason="depends on PUT — added in Task 3")
+@pytest.mark.asyncio
+async def test_get_single_key_scopes_to_user(client):
+    """alice's individual setting is not visible to bob via the {key} endpoint."""
+    await client.put(
+        "/logbook/settings/theme",
+        json={"value": "dark"},
+        headers=ALICE,
+    )
+    resp = await client.get("/logbook/settings/theme", headers=BOB)
+    assert resp.status_code == 404
+
+
 @pytest.mark.asyncio
 @pytest.mark.skip(reason="depends on PUT — added in Task 3")
 async def test_get_all_with_beamline_filter(client):

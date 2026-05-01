@@ -35,7 +35,6 @@ from lucid_logbook.models import (
     LogbookSchema,
     UserSettingRow,
     UserSettingSchema,
-    UserSettingWrite,
 )
 from loguru import logger
 from lucid_logbook.auth import keycloak_auth_enabled
