@@ -174,3 +174,33 @@ async def test_delete_does_not_affect_other_users(client):
     # Alice's still there
     r2 = await client.get("/logbook/settings/k", headers=ALICE)
     assert r2.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_delete_with_beamline_only_removes_that_scope(client):
+    """DELETE on a beamline-scoped key leaves the global-scope row intact."""
+    # Set the same key under both global and beamline scopes
+    await client.put(
+        "/logbook/settings/k", json={"value": "global"}, headers=ALICE
+    )
+    await client.put(
+        "/logbook/settings/k",
+        json={"value": "bl-value", "beamline": "11.0.1"},
+        headers=ALICE,
+    )
+
+    # Delete only the beamline-scoped row
+    r = await client.delete(
+        "/logbook/settings/k?beamline=11.0.1", headers=ALICE
+    )
+    assert r.status_code == 204
+
+    # Beamline-scoped row gone; global-scope row survives
+    bl = await client.get(
+        "/logbook/settings/k?beamline=11.0.1", headers=ALICE
+    )
+    assert bl.status_code == 404
+
+    g = await client.get("/logbook/settings/k", headers=ALICE)
+    assert g.status_code == 200
+    assert g.json()["value"] == "global"

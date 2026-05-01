@@ -8,6 +8,7 @@ JWT middleware later).
 from __future__ import annotations
 
 import uuid
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from litestar import Controller, Request, delete, get, post, put
@@ -400,14 +401,19 @@ async def _profile_image_id_post_write(
         return
     image_store: ImageStore = request.app.state.image_store
     try:
-        image_store.delete(old_value)
+        deleted = image_store.delete(old_value)
+        if not deleted:
+            logger.debug(
+                "Old profile image {} not found on disk; already cleaned up?",
+                old_value,
+            )
     except Exception as e:
         logger.warning(
             "Failed to delete old profile image {}: {}", old_value, e
         )
 
 
-_SETTINGS_POST_WRITE_HOOKS: dict[str, Any] = {
+_SETTINGS_POST_WRITE_HOOKS: dict[str, Callable[..., Awaitable[None]]] = {
     "profile_image_id": _profile_image_id_post_write,
 }
 
