@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 from litestar import Litestar, get
 from litestar.di import Provide
 from litestar.middleware.base import DefineMiddleware
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from lucid_logbook.api import LogbookController, SearchController
+from lucid_logbook.api import ImageController, LogbookController, SearchController
 from lucid_logbook.auth import KeycloakAuthMiddleware, keycloak_auth_enabled
+from lucid_logbook.image_store import ImageStore
 from lucid_logbook.models import Base
 
 _DEFAULT_DB_URL = "sqlite+aiosqlite:///logbook.db"
@@ -47,12 +49,17 @@ def create_app(db_url: str | None = None) -> Litestar:
     if keycloak_auth_enabled():
         middleware.append(DefineMiddleware(KeycloakAuthMiddleware))
 
-    return Litestar(
-        route_handlers=[health_check, LogbookController, SearchController],
+    image_dir = Path(os.environ.get("IMAGE_STORAGE_DIR", "./logbook_images"))
+    image_store = ImageStore(storage_dir=image_dir)
+
+    app = Litestar(
+        route_handlers=[health_check, LogbookController, SearchController, ImageController],
         on_startup=[on_startup],
         dependencies={"db_session": Provide(provide_db_session)},
         middleware=middleware,
     )
+    app.state.image_store = image_store
+    return app
 
 
 app = create_app()

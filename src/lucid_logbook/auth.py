@@ -27,7 +27,7 @@ def keycloak_auth_enabled() -> bool:
 
 def _get_keycloak_config() -> dict[str, str]:
     return {
-        "url": os.environ["KEYCLOAK_URL"],
+        "url": os.environ["KEYCLOAK_URL"].rstrip("/"),
         "realm": os.environ["KEYCLOAK_REALM"],
         "client_id": os.environ.get("KEYCLOAK_CLIENT_ID", "lucid-logbook"),
         "audience": os.environ.get("KEYCLOAK_AUDIENCE", ""),
@@ -83,16 +83,10 @@ class KeycloakAuthMiddleware(AbstractMiddleware):
     Skips the ``/health`` endpoint.
     """
 
-    scopes = {"/health"}  # excluded paths
+    exclude = ["/health"]
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
-            await self.app(scope, receive, send)
-            return
-
-        # Skip excluded paths
-        path = scope.get("path", "")
-        if path in self.scopes:
             await self.app(scope, receive, send)
             return
 
