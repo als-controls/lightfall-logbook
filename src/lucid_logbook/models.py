@@ -15,7 +15,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, Text, Uuid
+from sqlalchemy import JSON, DateTime, ForeignKey, Integer, PrimaryKeyConstraint, String, Text, Uuid
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 # ---------------------------------------------------------------------------
@@ -102,6 +102,24 @@ class FragmentRow(Base):
     entry: Mapped[EntryRow] = relationship(back_populates="fragments")
 
 
+class UserSettingRow(Base):
+    __tablename__ = "user_settings"
+
+    user_id: Mapped[str] = mapped_column(String(256), nullable=False)
+    beamline: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    key: Mapped[str] = mapped_column(String(128), nullable=False)
+    value: Mapped[Any] = mapped_column(JSON, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
+    )
+
+    __table_args__ = (
+        PrimaryKeyConstraint("user_id", "beamline", "key"),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Pydantic API schemas
 # ---------------------------------------------------------------------------
@@ -174,3 +192,22 @@ class LogbookSchema(BaseModel):
     id: uuid.UUID
     user_id: str
     created_at: datetime
+
+
+class UserSettingWrite(BaseModel):
+    """Payload for PUT /logbook/settings/{key}."""
+    model_config = ConfigDict(extra="ignore")
+
+    value: Any
+    beamline: str = ""
+
+
+class UserSettingSchema(BaseModel):
+    """Read representation."""
+    model_config = ConfigDict(from_attributes=True)
+
+    user_id: str
+    beamline: str
+    key: str
+    value: Any
+    updated_at: datetime

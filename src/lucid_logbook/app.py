@@ -10,7 +10,12 @@ from litestar.di import Provide
 from litestar.middleware.base import DefineMiddleware
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from lucid_logbook.api import ImageController, LogbookController, SearchController
+from lucid_logbook.api import (
+    ImageController,
+    LogbookController,
+    SearchController,
+    SettingsController,
+)
 from lucid_logbook.auth import KeycloakAuthMiddleware, keycloak_auth_enabled
 from lucid_logbook.image_store import ImageStore
 from lucid_logbook.models import Base
@@ -53,7 +58,7 @@ def create_app(db_url: str | None = None) -> Litestar:
     image_store = ImageStore(storage_dir=image_dir)
 
     app = Litestar(
-        route_handlers=[health_check, LogbookController, SearchController, ImageController],
+        route_handlers=[health_check, LogbookController, SearchController, ImageController, SettingsController],
         on_startup=[on_startup],
         dependencies={"db_session": Provide(provide_db_session)},
         middleware=middleware,

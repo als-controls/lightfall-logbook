@@ -8,6 +8,7 @@ JWT middleware later).
 from __future__ import annotations
 
 import uuid
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from litestar import Controller, Request, delete, get, post, put
@@ -33,6 +34,9 @@ from lucid_logbook.models import (
     FragmentUpdate,
     LogbookRow,
     LogbookSchema,
+    UserSettingRow,
+    UserSettingSchema,
+    UserSettingWrite,
 )
 from loguru import logger
 from lucid_logbook.auth import keycloak_auth_enabled
@@ -378,3 +382,185 @@ class ImageController(Controller):
         deleted = image_store.delete(image_id)
         if not deleted:
             raise NotFoundException(f"Image not found: {image_id}")
+
+
+# ---------------------------------------------------------------------------
+# Settings
+# ---------------------------------------------------------------------------
+
+
+async def _profile_image_id_post_write(
+    *, request: Any, old_value: Any, new_value: Any, **_: Any
+) -> None:
+    """When profile_image_id is changed, delete the previous image's bytes.
+
+    Failures here are caught at the call site (in put_setting); we log and
+    move on so a missing-blob doesn't masquerade as a failed write.
+    """
+    if not old_value or old_value == new_value:
+        return
+    image_store: ImageStore = request.app.state.image_store
+    try:
+        deleted = image_store.delete(old_value)
+        if not deleted:
+            logger.debug(
+                "Old profile image {} not found on disk; already cleaned up?",
+                old_value,
+            )
+    except Exception as e:
+        logger.warning(
+            "Failed to delete old profile image {}: {}", old_value, e
+        )
+
+
+_SETTINGS_POST_WRITE_HOOKS: dict[str, Callable[..., Awaitable[None]]] = {
+    "profile_image_id": _profile_image_id_post_write,
+}
+
+
+async def _run_settings_post_write_hook(
+    *,
+    request: Any,
+    user_id: str,
+    beamline: str,
+    key: str,
+    old_value: Any,
+    new_value: Any,
+) -> None:
+    hook = _SETTINGS_POST_WRITE_HOOKS.get(key)
+    if hook is None:
+        return
+    await hook(
+        request=request,
+        user_id=user_id,
+        beamline=beamline,
+        old_value=old_value,
+        new_value=new_value,
+    )
+
+
+class SettingsController(Controller):
+    """Per-user key/value settings, optionally scoped to a beamline."""
+
+    path = "/logbook/settings"
+
+    @get("/")
+    async def list_settings(
+        self,
+        request: Any,
+        db_session: AsyncSession,
+        beamline: str = "",
+    ) -> dict[str, Any]:
+        """Return {key: value, ...} for the requesting user in this scope."""
+        user_id = _get_user_id(request)
+        result = await db_session.execute(
+            select(UserSettingRow)
+            .where(UserSettingRow.user_id == user_id)
+            .where(UserSettingRow.beamline == beamline)
+        )
+        rows = result.scalars().all()
+        await db_session.commit()
+        return {row.key: row.value for row in rows}
+
+    @get("/{key:str}")
+    async def get_setting(
+        self,
+        key: str,
+        request: Any,
+        db_session: AsyncSession,
+        beamline: str = "",
+    ) -> UserSettingSchema:
+        user_id = _get_user_id(request)
+        result = await db_session.execute(
+            select(UserSettingRow).where(
+                UserSettingRow.user_id == user_id,
+                UserSettingRow.beamline == beamline,
+                UserSettingRow.key == key,
+            )
+        )
+        row = result.scalar_one_or_none()
+        if row is None:
+            raise NotFoundException(f"Setting {key!r} not found")
+        await db_session.commit()
+        return UserSettingSchema.model_validate(row)
+
+    @put("/{key:str}")
+    async def put_setting(
+        self,
+        key: str,
+        data: UserSettingWrite,
+        request: Any,
+        db_session: AsyncSession,
+    ) -> UserSettingSchema:
+        user_id = _get_user_id(request)
+        # TODO: SELECT-then-INSERT/UPDATE is not atomic under Postgres;
+        # rewrite as ON CONFLICT DO UPDATE before Postgres promotion.
+        # SQLite serializes writes so this is safe in current deployments.
+        result = await db_session.execute(
+            select(UserSettingRow).where(
+                UserSettingRow.user_id == user_id,
+                UserSettingRow.beamline == data.beamline,
+                UserSettingRow.key == key,
+            )
+        )
+        row = result.scalar_one_or_none()
+        old_value = row.value if row is not None else None
+
+        if row is None:
+            row = UserSettingRow(
+                user_id=user_id,
+                beamline=data.beamline,
+                key=key,
+                value=data.value,
+            )
+            db_session.add(row)
+        else:
+            row.value = data.value
+            # updated_at refreshes via the column's onupdate hook on commit
+
+        await db_session.commit()
+        await db_session.refresh(row)
+
+        # Run any post-write hook registered for this key. Hook failures
+        # MUST NOT fail the response — the write is already durable, and
+        # hooks handle side-effects (e.g., orphan-blob cleanup) that are
+        # safer to log-and-move-on than to surface as a 500.
+        try:
+            await _run_settings_post_write_hook(
+                request=request,
+                user_id=user_id,
+                beamline=data.beamline,
+                key=key,
+                old_value=old_value,
+                new_value=data.value,
+            )
+        except Exception:
+            logger.exception(
+                "Post-write hook failed for key={!r} user={!r}; "
+                "write already committed",
+                key,
+                user_id,
+            )
+        return UserSettingSchema.model_validate(row)
+
+    @delete("/{key:str}", status_code=204)
+    async def delete_setting(
+        self,
+        key: str,
+        request: Any,
+        db_session: AsyncSession,
+        beamline: str = "",
+    ) -> None:
+        user_id = _get_user_id(request)
+        result = await db_session.execute(
+            select(UserSettingRow).where(
+                UserSettingRow.user_id == user_id,
+                UserSettingRow.beamline == beamline,
+                UserSettingRow.key == key,
+            )
+        )
+        row = result.scalar_one_or_none()
+        if row is None:
+            raise NotFoundException(f"Setting {key!r} not found")
+        await db_session.delete(row)
+        await db_session.commit()
