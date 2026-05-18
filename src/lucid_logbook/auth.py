@@ -190,4 +190,5 @@ async def _send_401(send: Send, detail: str) -> None:
     await send({
         "type": "http.response.body",
         "body": body,
+        "more_body": False,
     })

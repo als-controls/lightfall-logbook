@@ -1,7 +1,7 @@
 """Tests for /api/v1/auth/apikey mint + revoke and Apikey-scheme auth."""
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -321,3 +321,37 @@ async def test_health_endpoint_unauthenticated(client):
     """The /health exclusion still works after the middleware switch."""
     resp = await client.get("/health")
     assert resp.status_code == 200
+
+
+async def test_duplicate_first_eight_per_user_rejected(session_factory):
+    """Composite UNIQUE(sub, first_eight) prevents same-user collision."""
+    import secrets
+    from sqlalchemy.exc import IntegrityError
+    from lucid_logbook.apikeys import ApiKeyRow
+
+    async with session_factory() as session:
+        row1 = ApiKeyRow(
+            secret_hash="hash1",
+            first_eight="abcdef12",
+            sub="alice",
+            expires_at=datetime.now(timezone.utc) + timedelta(days=1),
+            scopes=[],
+            note="",
+            revoked=False,
+            created_at=datetime.now(timezone.utc),
+        )
+        row2 = ApiKeyRow(
+            secret_hash="hash2",
+            first_eight="abcdef12",  # same first_eight, same user -- collision
+            sub="alice",
+            expires_at=datetime.now(timezone.utc) + timedelta(days=1),
+            scopes=[],
+            note="",
+            revoked=False,
+            created_at=datetime.now(timezone.utc),
+        )
+        session.add(row1)
+        await session.commit()
+        session.add(row2)
+        with pytest.raises(IntegrityError):
+            await session.commit()

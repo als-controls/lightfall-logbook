@@ -29,7 +29,15 @@ from litestar.exceptions import (
 )
 from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import JSON, Boolean, DateTime, Integer, String, select
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    DateTime,
+    Integer,
+    String,
+    UniqueConstraint,
+    select,
+)
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -80,6 +88,10 @@ class ApiKeyRow(Base):
         DateTime(timezone=True),
         nullable=False,
         default=lambda: datetime.now(UTC),
+    )
+
+    __table_args__ = (
+        UniqueConstraint("sub", "first_eight", name="uq_api_keys_sub_first_eight"),
     )
 
 
@@ -218,6 +230,8 @@ def _get_caller_sub(request: Request) -> str:
     if user_id:
         return user_id
     if not keycloak_auth_enabled():
+        # Dev mode with no auth header AND no X-User-Id: use a stand-in identity
+        # so endpoints don't crash. Production has middleware-enforced auth.
         return "dev-user"
     raise NotAuthorizedException("Missing user identity")
 
@@ -281,6 +295,5 @@ class AuthController(Controller):
         sub = _get_caller_sub(request)
         ok = await revoke_key(db_session, sub=sub, first_eight=first_eight)
         if not ok:
-            await db_session.commit()
             raise NotFoundException("No matching apikey")
         await db_session.commit()
