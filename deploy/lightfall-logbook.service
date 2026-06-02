@@ -1,0 +1,21 @@
+[Unit]
+Description=Lightfall Logbook API
+After=network.target
+
+[Service]
+Type=simple
+User=lightfall-logbook
+Group=lightfall-logbook
+WorkingDirectory=/opt/lightfall-logbook
+EnvironmentFile=/opt/lightfall-logbook/.env
+ExecStart=/bin/bash -c '/opt/lightfall-logbook/.venv/bin/uvicorn lightfall_logbook.app:app \
+    --host ${HOST:-0.0.0.0} \
+    --port ${PORT:-8000} \
+    --workers ${WORKERS:-2}'
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

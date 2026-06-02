@@ -6,7 +6,7 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from lucid_logbook.models import (
+from lightfall_logbook.models import (
     Base,
     UserSettingRow,
     UserSettingSchema,

@@ -10,15 +10,15 @@ from litestar.di import Provide
 from litestar.middleware.base import DefineMiddleware
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from lucid_logbook.api import (
+from lightfall_logbook.api import (
     ImageController,
     LogbookController,
     SearchController,
     SettingsController,
 )
-from lucid_logbook.auth import KeycloakAuthMiddleware, keycloak_auth_enabled
-from lucid_logbook.image_store import ImageStore
-from lucid_logbook.models import Base
+from lightfall_logbook.auth import KeycloakAuthMiddleware, keycloak_auth_enabled
+from lightfall_logbook.image_store import ImageStore
+from lightfall_logbook.models import Base
 
 _DEFAULT_DB_URL = "sqlite+aiosqlite:///logbook.db"
 

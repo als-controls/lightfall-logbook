@@ -7,7 +7,7 @@ import zlib
 import pytest
 from pathlib import Path
 
-from lucid_logbook.image_store import ImageStore, ImageStoreError
+from lightfall_logbook.image_store import ImageStore, ImageStoreError
 
 
 def _make_minimal_png() -> bytes:

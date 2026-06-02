@@ -29,7 +29,7 @@ def _get_keycloak_config() -> dict[str, str]:
     return {
         "url": os.environ["KEYCLOAK_URL"].rstrip("/"),
         "realm": os.environ["KEYCLOAK_REALM"],
-        "client_id": os.environ.get("KEYCLOAK_CLIENT_ID", "lucid-logbook"),
+        "client_id": os.environ.get("KEYCLOAK_CLIENT_ID", "lightfall-logbook"),
         "audience": os.environ.get("KEYCLOAK_AUDIENCE", ""),
     }
 

@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 from litestar.testing import AsyncTestClient
 
-from lucid_logbook.app import create_app
+from lightfall_logbook.app import create_app
 
 
 @pytest.fixture

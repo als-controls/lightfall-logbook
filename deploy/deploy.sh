@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# lucid-logbook deploy script for Rocky Linux 10 (Proxmox VM)
+# lightfall-logbook deploy script for Rocky Linux 10 (Proxmox VM)
 # Usage: sudo bash deploy.sh [--repo-url URL]
 
-APP_DIR="/opt/lucid-logbook"
-APP_USER="lucid-logbook"
-SERVICE_NAME="lucid-logbook"
+APP_DIR="/opt/lightfall-logbook"
+APP_USER="lightfall-logbook"
+SERVICE_NAME="lightfall-logbook"
 PYTHON="python3"
 REPO_URL="${1:-}"
 
-echo "=== lucid-logbook deployment ==="
+echo "=== lightfall-logbook deployment ==="
 
 # --- System deps ---
 echo "[1/6] Installing system dependencies..."
@@ -86,7 +86,7 @@ echo ""
 echo "=== Deployment complete ==="
 echo ""
 echo "Next steps:"
-echo "  1. Edit /opt/lucid-logbook/.env"
+echo "  1. Edit /opt/lightfall-logbook/.env"
 echo "  2. sudo systemctl start $SERVICE_NAME"
 echo "  3. sudo systemctl status $SERVICE_NAME"
 echo "  4. journalctl -u $SERVICE_NAME -f    (logs)"
