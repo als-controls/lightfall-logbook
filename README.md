@@ -29,6 +29,10 @@ uvicorn lightfall_logbook.app:app --reload
 | POST | `/logbook/entries/{id}/fragments` | Add fragment |
 | PUT | `/logbook/fragments/{id}` | Update text fragment |
 | DELETE | `/logbook/fragments/{id}` | Delete text fragment |
+| POST | `/api/v1/auth/apikey` | Mint a user-scoped API key (requires Bearer in prod) |
+| DELETE | `/api/v1/auth/apikey` | Revoke a user-scoped API key by `first_eight` |
+
+Once minted, the secret is sent on subsequent requests as `Authorization: Apikey <secret>`. The middleware accepts either Bearer (Keycloak) or Apikey auth schemes; keys live up to 7 days by default.
 
 ## Local Storage
 

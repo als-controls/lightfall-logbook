@@ -16,7 +16,8 @@ from lightfall_logbook.api import (
     SearchController,
     SettingsController,
 )
-from lightfall_logbook.auth import KeycloakAuthMiddleware, keycloak_auth_enabled
+from lightfall_logbook.apikeys import AuthController
+from lightfall_logbook.auth import CombinedAuthMiddleware
 from lightfall_logbook.image_store import ImageStore
 from lightfall_logbook.models import Base
 
@@ -50,15 +51,25 @@ def create_app(db_url: str | None = None) -> Litestar:
         async with session_factory() as session:
             yield session  # type: ignore[misc]
 
-    middleware = []
-    if keycloak_auth_enabled():
-        middleware.append(DefineMiddleware(KeycloakAuthMiddleware))
+    # Combined middleware always registers; the dev-mode fallthrough
+    # (pass-through when no Authorization header AND Keycloak is unset) is
+    # handled inside the middleware itself.
+    middleware = [
+        DefineMiddleware(CombinedAuthMiddleware, session_factory=session_factory),
+    ]
 
     image_dir = Path(os.environ.get("IMAGE_STORAGE_DIR", "./logbook_images"))
     image_store = ImageStore(storage_dir=image_dir)
 
     app = Litestar(
-        route_handlers=[health_check, LogbookController, SearchController, ImageController, SettingsController],
+        route_handlers=[
+            health_check,
+            LogbookController,
+            SearchController,
+            ImageController,
+            SettingsController,
+            AuthController,
+        ],
         on_startup=[on_startup],
         dependencies={"db_session": Provide(provide_db_session)},
         middleware=middleware,
