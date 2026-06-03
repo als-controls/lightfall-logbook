@@ -41,8 +41,8 @@ from sqlalchemy import (
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapped, mapped_column
 
-from lucid_logbook.auth import keycloak_auth_enabled
-from lucid_logbook.models import Base
+from lightfall_logbook.auth import keycloak_auth_enabled
+from lightfall_logbook.models import Base
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -54,7 +54,7 @@ MAX_EXPIRES_IN_SECONDS = 7 * 86400 + 60
 DEFAULT_EXPIRES_IN_SECONDS = 7 * 86400
 
 # Secret cleartext is hex (token_hex(32) -> 64 chars). first_eight is the
-# first 8 chars of the cleartext -- matches the LUCID-side MintedKey
+# first 8 chars of the cleartext -- matches the Lightfall-side MintedKey
 # semantics on feature/notebook-pipelines-impl.
 _SECRET_BYTES = 32
 _FIRST_EIGHT_LEN = 8

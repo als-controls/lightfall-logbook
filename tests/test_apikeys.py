@@ -9,15 +9,15 @@ from litestar.testing import AsyncTestClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from lucid_logbook.apikeys import (
+from lightfall_logbook.apikeys import (
     ApiKeyRow,
     _hash_secret,
     lookup_user_by_secret,
     mint_key,
     revoke_key,
 )
-from lucid_logbook.app import create_app
-from lucid_logbook.models import Base
+from lightfall_logbook.app import create_app
+from lightfall_logbook.models import Base
 
 # ---------------------------------------------------------------------------
 # Test fixtures
@@ -327,7 +327,7 @@ async def test_duplicate_first_eight_per_user_rejected(session_factory):
     """Composite UNIQUE(sub, first_eight) prevents same-user collision."""
     import secrets
     from sqlalchemy.exc import IntegrityError
-    from lucid_logbook.apikeys import ApiKeyRow
+    from lightfall_logbook.apikeys import ApiKeyRow
 
     async with session_factory() as session:
         row1 = ApiKeyRow(

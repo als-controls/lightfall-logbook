@@ -16,7 +16,7 @@ from typing import Any
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from lucid_logbook.models import (
+from lightfall_logbook.models import (
     Base,
     EntryRow,
     EntrySchema,
@@ -27,7 +27,7 @@ from lucid_logbook.models import (
 )
 from loguru import logger
 
-_DEFAULT_DB = Path.home() / ".lucid" / "logbook.db"
+_DEFAULT_DB = Path.home() / ".lightfall" / "logbook.db"
 
 
 class LocalStore:

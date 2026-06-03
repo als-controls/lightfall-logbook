@@ -120,10 +120,10 @@ class UserSettingRow(Base):
     )
 
 
-# Note: ``ApiKeyRow`` lives in :mod:`lucid_logbook.apikeys` (adjacent to its
+# Note: ``ApiKeyRow`` lives in :mod:`lightfall_logbook.apikeys` (adjacent to its
 # mint/lookup/revoke helpers). It registers against the same ``Base`` so
 # ``Base.metadata.create_all`` picks up the ``api_keys`` table as long as
-# ``lucid_logbook.apikeys`` has been imported -- which the app factory
+# ``lightfall_logbook.apikeys`` has been imported -- which the app factory
 # guarantees by importing :class:`AuthController`.
 
 

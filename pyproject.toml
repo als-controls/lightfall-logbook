@@ -3,9 +3,9 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "lucid-logbook"
+name = "lightfall-logbook"
 version = "0.1.0"
-description = "Backend service for the LUCID experiment logbook"
+description = "Backend service for the Lightfall experiment logbook"
 requires-python = ">=3.11"
 dependencies = [
     "litestar>=2.0",

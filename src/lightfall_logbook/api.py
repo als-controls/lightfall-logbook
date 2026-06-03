@@ -21,9 +21,9 @@ from litestar.response import Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from lucid_logbook.image_store import ImageStore, ImageStoreError
+from lightfall_logbook.image_store import ImageStore, ImageStoreError
 
-from lucid_logbook.models import (
+from lightfall_logbook.models import (
     EntryCreate,
     EntryRow,
     EntrySchema,
@@ -39,7 +39,7 @@ from lucid_logbook.models import (
     UserSettingWrite,
 )
 from loguru import logger
-from lucid_logbook.auth import keycloak_auth_enabled
+from lightfall_logbook.auth import keycloak_auth_enabled
 
 
 # ---------------------------------------------------------------------------

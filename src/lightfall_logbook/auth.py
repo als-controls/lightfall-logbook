@@ -7,10 +7,10 @@ Accepts two auth schemes:
 
 In dev mode (no Keycloak env vars configured), unauthenticated requests are
 passed through so the existing ``X-User-Id`` header fallback in
-:func:`lucid_logbook.api._get_user_id` keeps working.
+:func:`lightfall_logbook.api._get_user_id` keeps working.
 
 The middleware always registers; the dev fallthrough is internal so we don't
-need conditional middleware wiring in :mod:`lucid_logbook.app`.
+need conditional middleware wiring in :mod:`lightfall_logbook.app`.
 """
 
 from __future__ import annotations
@@ -37,7 +37,7 @@ def _get_keycloak_config() -> dict[str, str]:
     return {
         "url": os.environ["KEYCLOAK_URL"].rstrip("/"),
         "realm": os.environ["KEYCLOAK_REALM"],
-        "client_id": os.environ.get("KEYCLOAK_CLIENT_ID", "lucid-logbook"),
+        "client_id": os.environ.get("KEYCLOAK_CLIENT_ID", "lightfall-logbook"),
         "audience": os.environ.get("KEYCLOAK_AUDIENCE", ""),
     }
 
@@ -166,7 +166,7 @@ class CombinedAuthMiddleware(AbstractMiddleware):
         if self._session_factory is None or not secret:
             return None
         # Import here to avoid circular imports at module load.
-        from lucid_logbook.apikeys import lookup_user_by_secret
+        from lightfall_logbook.apikeys import lookup_user_by_secret
 
         async with self._session_factory() as session:
             try:

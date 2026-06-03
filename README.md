@@ -1,6 +1,6 @@
-# lucid-logbook
+# lightfall-logbook
 
-Backend service for the LUCID experiment logbook.
+Backend service for the Lightfall experiment logbook.
 
 ## Overview
 
@@ -14,7 +14,7 @@ Litestar REST API providing per-user logbooks with an Entry→Fragment data mode
 
 ```bash
 pip install -e ".[dev]"
-uvicorn lucid_logbook.app:app --reload
+uvicorn lightfall_logbook.app:app --reload
 ```
 
 ## API
@@ -36,4 +36,4 @@ Once minted, the secret is sent on subsequent requests as `Authorization: Apikey
 
 ## Local Storage
 
-`lucid_logbook.local_store.LocalStore` provides offline-first SQLite storage with sync-on-reconnect. Used by the LUCID Qt client.
+`lightfall_logbook.local_store.LocalStore` provides offline-first SQLite storage with sync-on-reconnect. Used by the Lightfall Qt client.
