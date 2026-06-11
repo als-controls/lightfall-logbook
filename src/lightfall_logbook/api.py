@@ -137,7 +137,7 @@ async def _notify(request: Any, user_id: str, op: str, kind: str, entity_id: Any
         return
     try:
         await publisher.publish_change(
-            user_id=user_id, op=op, kind=kind, id=str(entity_id)
+            user_id=user_id, op=op, kind=kind, entity_id=str(entity_id)
         )
     except Exception:
         logger.debug("logbook change publish failed (ignored)")

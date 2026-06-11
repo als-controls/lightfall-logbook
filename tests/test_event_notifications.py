@@ -35,7 +35,7 @@ async def test_entry_create_update_delete_notify(client_and_pub):
     await tc.put(f"/logbook/entries/{eid}", json={"title": "y"}, headers=H)
     await tc.delete(f"/logbook/entries/{eid}", headers=H)
 
-    ops = [(c["op"], c["kind"], c["id"]) for c in pub.calls]
+    ops = [(c["op"], c["kind"], c["entity_id"]) for c in pub.calls]
     assert ("create", "entry", eid) in ops
     assert ("update", "entry", eid) in ops
     assert ("delete", "entry", eid) in ops
