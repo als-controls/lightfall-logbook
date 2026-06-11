@@ -19,6 +19,7 @@ from lightfall_logbook.api import (
 from lightfall_logbook.apikeys import AuthController
 from lightfall_logbook.auth import CombinedAuthMiddleware
 from lightfall_logbook.image_store import ImageStore
+from lightfall_logbook.events import LogbookEventPublisher
 from lightfall_logbook.models import Base
 
 _DEFAULT_DB_URL = "sqlite+aiosqlite:///logbook.db"
@@ -30,7 +31,7 @@ async def health_check() -> dict[str, str]:
     return {"status": "ok"}
 
 
-def create_app(db_url: str | None = None) -> Litestar:
+def create_app(db_url: str | None = None, event_publisher: "LogbookEventPublisher | None" = None) -> Litestar:
     """Create and configure the Litestar application.
 
     Args:
@@ -43,9 +44,16 @@ def create_app(db_url: str | None = None) -> Litestar:
     engine = create_async_engine(db_url, echo=False)
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
 
+    if event_publisher is None:
+        event_publisher = LogbookEventPublisher(os.environ.get("NATS_URL"))
+
     async def on_startup() -> None:
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
+        await event_publisher.connect()
+
+    async def on_shutdown() -> None:
+        await event_publisher.close()
 
     async def provide_db_session() -> AsyncSession:
         async with session_factory() as session:
@@ -71,10 +79,12 @@ def create_app(db_url: str | None = None) -> Litestar:
             AuthController,
         ],
         on_startup=[on_startup],
+        on_shutdown=[on_shutdown],
         dependencies={"db_session": Provide(provide_db_session)},
         middleware=middleware,
     )
     app.state.image_store = image_store
+    app.state.logbook_events = event_publisher
     return app
 
 
