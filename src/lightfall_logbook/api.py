@@ -84,6 +84,41 @@ async def _get_or_create_logbook(session: AsyncSession, user_id: str) -> Logbook
     return logbook
 
 
+async def _get_owned_entry(
+    session: AsyncSession, user_id: str, entry_id: uuid.UUID
+) -> EntryRow:
+    """Fetch an entry only if it belongs to ``user_id``'s logbook.
+
+    Raises ``NotFoundException`` (404, not 403) on a miss so we never reveal
+    that another user's entry exists.
+    """
+    result = await session.execute(
+        select(EntryRow)
+        .join(LogbookRow, EntryRow.logbook_id == LogbookRow.id)
+        .where(EntryRow.id == entry_id, LogbookRow.user_id == user_id)
+    )
+    entry = result.scalar_one_or_none()
+    if entry is None:
+        raise NotFoundException(f"Entry {entry_id} not found")
+    return entry
+
+
+async def _get_owned_fragment(
+    session: AsyncSession, user_id: str, fragment_id: uuid.UUID
+) -> FragmentRow:
+    """Fetch a fragment only if it belongs to ``user_id``'s logbook."""
+    result = await session.execute(
+        select(FragmentRow)
+        .join(EntryRow, FragmentRow.entry_id == EntryRow.id)
+        .join(LogbookRow, EntryRow.logbook_id == LogbookRow.id)
+        .where(FragmentRow.id == fragment_id, LogbookRow.user_id == user_id)
+    )
+    fragment = result.scalar_one_or_none()
+    if fragment is None:
+        raise NotFoundException(f"Fragment {fragment_id} not found")
+    return fragment
+
+
 # ---------------------------------------------------------------------------
 # Controller
 # ---------------------------------------------------------------------------
@@ -146,13 +181,8 @@ class LogbookController(Controller):
     async def get_entry(
         self, entry_id: uuid.UUID, request: Any, db_session: AsyncSession
     ) -> EntrySchema:
-        _get_user_id(request)
-        result = await db_session.execute(
-            select(EntryRow).where(EntryRow.id == entry_id)
-        )
-        entry = result.scalar_one_or_none()
-        if entry is None:
-            raise NotFoundException(f"Entry {entry_id} not found")
+        user_id = _get_user_id(request)
+        entry = await _get_owned_entry(db_session, user_id, entry_id)
         return EntrySchema.model_validate(entry)
 
     @put("/entries/{entry_id:uuid}")
@@ -163,13 +193,8 @@ class LogbookController(Controller):
         request: Any,
         db_session: AsyncSession,
     ) -> EntrySchema:
-        _get_user_id(request)
-        result = await db_session.execute(
-            select(EntryRow).where(EntryRow.id == entry_id)
-        )
-        entry = result.scalar_one_or_none()
-        if entry is None:
-            raise NotFoundException(f"Entry {entry_id} not found")
+        user_id = _get_user_id(request)
+        entry = await _get_owned_entry(db_session, user_id, entry_id)
         if data.title is not None:
             entry.title = data.title
         if data.tags is not None:
@@ -188,13 +213,8 @@ class LogbookController(Controller):
         request: Any,
         db_session: AsyncSession,
     ) -> FragmentSchema:
-        _get_user_id(request)
-        result = await db_session.execute(
-            select(EntryRow).where(EntryRow.id == entry_id)
-        )
-        entry = result.scalar_one_or_none()
-        if entry is None:
-            raise NotFoundException(f"Entry {entry_id} not found")
+        user_id = _get_user_id(request)
+        entry = await _get_owned_entry(db_session, user_id, entry_id)
 
         # Auto-assign position if not provided
         position = data.position
@@ -227,13 +247,8 @@ class LogbookController(Controller):
         request: Any,
         db_session: AsyncSession,
     ) -> FragmentSchema:
-        _get_user_id(request)
-        result = await db_session.execute(
-            select(FragmentRow).where(FragmentRow.id == fragment_id)
-        )
-        fragment = result.scalar_one_or_none()
-        if fragment is None:
-            raise NotFoundException(f"Fragment {fragment_id} not found")
+        user_id = _get_user_id(request)
+        fragment = await _get_owned_fragment(db_session, user_id, fragment_id)
         if fragment.kind != "text":
             raise ValidationException("Only text fragments can be edited")
         if data.content is not None:
@@ -251,13 +266,8 @@ class LogbookController(Controller):
         request: Any,
         db_session: AsyncSession,
     ) -> None:
-        _get_user_id(request)
-        result = await db_session.execute(
-            select(FragmentRow).where(FragmentRow.id == fragment_id)
-        )
-        fragment = result.scalar_one_or_none()
-        if fragment is None:
-            raise NotFoundException(f"Fragment {fragment_id} not found")
+        user_id = _get_user_id(request)
+        fragment = await _get_owned_fragment(db_session, user_id, fragment_id)
         if fragment.kind not in ("text", "image"):
             raise ValidationException("Only text and image fragments can be deleted")
 
@@ -276,13 +286,8 @@ class LogbookController(Controller):
         request: Any,
         db_session: AsyncSession,
     ) -> None:
-        _get_user_id(request)
-        result = await db_session.execute(
-            select(EntryRow).where(EntryRow.id == entry_id)
-        )
-        entry = result.scalar_one_or_none()
-        if entry is None:
-            raise NotFoundException(f"Entry {entry_id} not found")
+        user_id = _get_user_id(request)
+        entry = await _get_owned_entry(db_session, user_id, entry_id)
         await db_session.delete(entry)
         await db_session.commit()
 
