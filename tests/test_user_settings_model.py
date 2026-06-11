@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 from datetime import datetime
+
 import pytest
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from lightfall_logbook.models import (
@@ -54,7 +56,7 @@ async def test_pk_uniqueness(session):
 
     row2 = UserSettingRow(user_id="alice", beamline="", key="theme", value="light")
     session.add(row2)
-    with pytest.raises(Exception):  # IntegrityError, but vendor-specific
+    with pytest.raises(IntegrityError):
         await session.commit()
 
 

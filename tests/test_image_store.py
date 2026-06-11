@@ -3,9 +3,9 @@ from __future__ import annotations
 
 import struct
 import zlib
+from pathlib import Path
 
 import pytest
-from pathlib import Path
 
 from lightfall_logbook.image_store import ImageStore, ImageStoreError
 
