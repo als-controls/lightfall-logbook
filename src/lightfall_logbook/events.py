@@ -6,6 +6,7 @@ and never raises into the request path.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import ssl
 from typing import Any
@@ -43,10 +44,8 @@ class LogbookEventPublisher:
 
     async def close(self) -> None:
         if self._nc is not None:
-            try:
+            with contextlib.suppress(Exception):
                 await self._nc.drain()
-            except Exception:
-                pass
             self._nc = None
 
     async def publish_change(

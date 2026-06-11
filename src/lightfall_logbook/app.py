@@ -18,8 +18,8 @@ from lightfall_logbook.api import (
 )
 from lightfall_logbook.apikeys import AuthController
 from lightfall_logbook.auth import CombinedAuthMiddleware
-from lightfall_logbook.image_store import ImageStore
 from lightfall_logbook.events import LogbookEventPublisher
+from lightfall_logbook.image_store import ImageStore
 from lightfall_logbook.models import Base
 
 _DEFAULT_DB_URL = "sqlite+aiosqlite:///logbook.db"
@@ -31,7 +31,10 @@ async def health_check() -> dict[str, str]:
     return {"status": "ok"}
 
 
-def create_app(db_url: str | None = None, event_publisher: "LogbookEventPublisher | None" = None) -> Litestar:
+def create_app(
+    db_url: str | None = None,
+    event_publisher: LogbookEventPublisher | None = None,
+) -> Litestar:
     """Create and configure the Litestar application.
 
     Args:

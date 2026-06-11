@@ -1,6 +1,8 @@
 from __future__ import annotations
+
 import pytest
 from litestar.testing import AsyncTestClient
+
 from lightfall_logbook.app import create_app
 
 H = {"X-User-Id": "alice"}
@@ -57,3 +59,20 @@ async def test_fragment_create_update_delete_notify(client_and_pub):
     assert ("create", "fragment", fid) in ops
     assert ("update", "fragment", fid) in ops
     assert ("delete", "fragment", fid) in ops
+
+
+class _ExplodingPublisher:
+    async def connect(self): pass
+    async def close(self): pass
+    async def publish_change(self, **kwargs):
+        raise RuntimeError("nats down")
+
+
+@pytest.mark.asyncio
+async def test_write_succeeds_when_publisher_raises(tmp_path, monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", f"sqlite+aiosqlite:///{tmp_path}/t.db")
+    monkeypatch.setenv("IMAGE_STORAGE_DIR", str(tmp_path / "img"))
+    app = create_app(event_publisher=_ExplodingPublisher())
+    async with AsyncTestClient(app=app) as tc:
+        resp = await tc.post("/logbook/entries", json={"title": "x"}, headers=H)
+        assert resp.status_code == 201
