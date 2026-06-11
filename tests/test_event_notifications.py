@@ -40,3 +40,20 @@ async def test_entry_create_update_delete_notify(client_and_pub):
     assert ("update", "entry", eid) in ops
     assert ("delete", "entry", eid) in ops
     assert all(c["user_id"] == "alice" for c in pub.calls)
+
+
+@pytest.mark.asyncio
+async def test_fragment_create_update_delete_notify(client_and_pub):
+    tc, pub = client_and_pub
+    eid = (await tc.post("/logbook/entries", json={}, headers=H)).json()["id"]
+    fid = (await tc.post(
+        f"/logbook/entries/{eid}/fragments",
+        json={"kind": "text", "content": "hi"}, headers=H,
+    )).json()["id"]
+    await tc.put(f"/logbook/fragments/{fid}", json={"content": "bye"}, headers=H)
+    await tc.delete(f"/logbook/fragments/{fid}", headers=H)
+
+    ops = [(c["op"], c["kind"], c["entity_id"]) for c in pub.calls]
+    assert ("create", "fragment", fid) in ops
+    assert ("update", "fragment", fid) in ops
+    assert ("delete", "fragment", fid) in ops

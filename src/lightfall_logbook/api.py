@@ -262,6 +262,7 @@ class LogbookController(Controller):
         db_session.add(fragment)
         await db_session.commit()
         await db_session.refresh(fragment)
+        await _notify(request, user_id, "create", "fragment", fragment.id)
         logger.debug("Created fragment {} at position {}", fragment.id, position)
         return FragmentSchema.model_validate(fragment)
 
@@ -283,6 +284,7 @@ class LogbookController(Controller):
             fragment.position = data.position
         await db_session.commit()
         await db_session.refresh(fragment)
+        await _notify(request, user_id, "update", "fragment", fragment.id)
         return FragmentSchema.model_validate(fragment)
 
     @delete("/fragments/{fragment_id:uuid}", status_code=204)
@@ -310,6 +312,7 @@ class LogbookController(Controller):
 
         await db_session.delete(fragment)
         await db_session.commit()
+        await _notify(request, user_id, "delete", "fragment", fragment_id)
 
     @delete("/entries/{entry_id:uuid}", status_code=204)
     async def delete_entry(
