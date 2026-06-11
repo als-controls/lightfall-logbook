@@ -1,6 +1,8 @@
 from __future__ import annotations
+
 import pytest
-from lightfall_logbook.events import subject_for_user, LogbookEventPublisher
+
+from lightfall_logbook.events import LogbookEventPublisher, subject_for_user
 
 
 def test_subject_is_deterministic_and_subject_safe():

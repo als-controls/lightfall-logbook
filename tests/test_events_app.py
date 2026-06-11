@@ -1,6 +1,8 @@
 from __future__ import annotations
+
 import pytest
 from litestar.testing import AsyncTestClient
+
 from lightfall_logbook.app import create_app
 
 
