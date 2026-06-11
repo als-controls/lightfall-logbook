@@ -130,6 +130,19 @@ async def _user_owns_image(
     return result.scalar_one_or_none() is not None
 
 
+async def _notify(request: Any, user_id: str, op: str, kind: str, entity_id: Any) -> None:
+    """Best-effort publish of a logbook change. Never raises into the handler."""
+    publisher = getattr(request.app.state, "logbook_events", None)
+    if publisher is None:
+        return
+    try:
+        await publisher.publish_change(
+            user_id=user_id, op=op, kind=kind, id=str(entity_id)
+        )
+    except Exception:
+        logger.debug("logbook change publish failed (ignored)")
+
+
 # ---------------------------------------------------------------------------
 # Controller
 # ---------------------------------------------------------------------------
@@ -165,6 +178,7 @@ class LogbookController(Controller):
         logger.info("Created entry {} in logbook {}", entry.id, logbook.id)
         await db_session.commit()
         await db_session.refresh(entry)
+        await _notify(request, user_id, "create", "entry", entry.id)
         return EntrySchema.model_validate(entry)
 
     @get("/entries")
@@ -212,6 +226,7 @@ class LogbookController(Controller):
             entry.tags = data.tags
         await db_session.commit()
         await db_session.refresh(entry)
+        await _notify(request, user_id, "update", "entry", entry.id)
         return EntrySchema.model_validate(entry)
 
     # -- Fragments ----------------------------------------------------------
@@ -307,6 +322,7 @@ class LogbookController(Controller):
         entry = await _get_owned_entry(db_session, user_id, entry_id)
         await db_session.delete(entry)
         await db_session.commit()
+        await _notify(request, user_id, "delete", "entry", entry_id)
 
 
 # ---------------------------------------------------------------------------
