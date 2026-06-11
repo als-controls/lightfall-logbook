@@ -13,7 +13,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import select, update
+from loguru import logger
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from lightfall_logbook.models import (
@@ -25,7 +26,6 @@ from lightfall_logbook.models import (
     LogbookRow,
     LogbookSchema,
 )
-from loguru import logger
 
 _DEFAULT_DB = Path.home() / ".lightfall" / "logbook.db"
 
