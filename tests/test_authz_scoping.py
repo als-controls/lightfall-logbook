@@ -7,6 +7,8 @@ not reveal that the resource exists).
 """
 from __future__ import annotations
 
+import struct
+import zlib
 from pathlib import Path
 
 import pytest
@@ -16,6 +18,19 @@ from lightfall_logbook.app import create_app
 
 ALICE = {"X-User-Id": "alice"}
 BOB = {"X-User-Id": "bob"}
+
+
+def _make_minimal_png() -> bytes:
+    """1x1 white PNG."""
+    def _chunk(chunk_type: bytes, data: bytes) -> bytes:
+        c = chunk_type + data
+        return struct.pack(">I", len(data)) + c + struct.pack(">I", zlib.crc32(c) & 0xFFFFFFFF)
+
+    header = b"\x89PNG\r\n\x1a\n"
+    ihdr = _chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0))
+    idat = _chunk(b"IDAT", zlib.compress(b"\x00\xff\xff\xff"))
+    iend = _chunk(b"IEND", b"")
+    return header + ihdr + idat + iend
 
 
 @pytest.fixture
@@ -100,6 +115,38 @@ async def test_bob_cannot_delete_alice_fragment(client, alice_entry):
     entry = await client.get(f"/logbook/entries/{entry_id}", headers=ALICE)
     frag_ids = [f["id"] for f in entry.json()["fragments"]]
     assert fragment_id in frag_ids
+
+
+@pytest.fixture
+async def alice_image(client):
+    """Alice uploads an image. Returns its image_id."""
+    upload = await client.post(
+        "/logbook/images",
+        files={"file": ("a.png", _make_minimal_png(), "image/png")},
+        headers=ALICE,
+    )
+    return upload.json()["image_id"]
+
+
+@pytest.mark.asyncio
+async def test_bob_cannot_download_alice_image(client, alice_image):
+    resp = await client.get(f"/logbook/images/{alice_image}", headers=BOB)
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_bob_cannot_delete_alice_image(client, alice_image, tmp_path):
+    resp = await client.delete(f"/logbook/images/{alice_image}", headers=BOB)
+    assert resp.status_code == 404
+    # Still downloadable by the owner.
+    owner_resp = await client.get(f"/logbook/images/{alice_image}", headers=ALICE)
+    assert owner_resp.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_owner_can_download_own_image(client, alice_image):
+    resp = await client.get(f"/logbook/images/{alice_image}", headers=ALICE)
+    assert resp.status_code == 200
 
 
 @pytest.mark.asyncio

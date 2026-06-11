@@ -35,5 +35,9 @@ line-length = 100
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
 
+[tool.ruff.lint.flake8-bugbear]
+# Litestar requires call-in-default for parameter markers (e.g. Body(...)).
+extend-immutable-calls = ["litestar.params.Body"]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

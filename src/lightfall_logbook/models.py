@@ -102,6 +102,24 @@ class FragmentRow(Base):
     entry: Mapped[EntryRow] = relationship(back_populates="fragments")
 
 
+class ImageOwnerRow(Base):
+    """Maps an uploaded image to the user who uploaded it.
+
+    Image bytes live on disk in the content-addressed :class:`ImageStore`;
+    this table is the authorization record so download/delete can be scoped to
+    the owner regardless of whether the image is later referenced by a fragment
+    or a user setting (e.g. ``profile_image_id``).
+    """
+
+    __tablename__ = "image_owners"
+
+    image_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(256), nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )
+
+
 class UserSettingRow(Base):
     __tablename__ = "user_settings"
 

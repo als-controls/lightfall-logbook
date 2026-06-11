@@ -13,16 +13,16 @@ from typing import Any
 
 from litestar import Controller, Request, delete, get, post, put
 from litestar.datastructures import UploadFile
-from litestar.di import Provide
 from litestar.enums import RequestEncodingType
 from litestar.exceptions import NotAuthorizedException, NotFoundException, ValidationException
 from litestar.params import Body
 from litestar.response import Response
+from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from lightfall_logbook.auth import keycloak_auth_enabled
 from lightfall_logbook.image_store import ImageStore, ImageStoreError
-
 from lightfall_logbook.models import (
     EntryCreate,
     EntryRow,
@@ -32,15 +32,13 @@ from lightfall_logbook.models import (
     FragmentRow,
     FragmentSchema,
     FragmentUpdate,
+    ImageOwnerRow,
     LogbookRow,
     LogbookSchema,
     UserSettingRow,
     UserSettingSchema,
     UserSettingWrite,
 )
-from loguru import logger
-from lightfall_logbook.auth import keycloak_auth_enabled
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -117,6 +115,19 @@ async def _get_owned_fragment(
     if fragment is None:
         raise NotFoundException(f"Fragment {fragment_id} not found")
     return fragment
+
+
+async def _user_owns_image(
+    session: AsyncSession, user_id: str, image_id: str
+) -> bool:
+    """Whether ``user_id`` uploaded (and therefore may access) ``image_id``."""
+    result = await session.execute(
+        select(ImageOwnerRow.image_id).where(
+            ImageOwnerRow.image_id == image_id,
+            ImageOwnerRow.user_id == user_id,
+        )
+    )
+    return result.scalar_one_or_none() is not None
 
 
 # ---------------------------------------------------------------------------
@@ -271,10 +282,16 @@ class LogbookController(Controller):
         if fragment.kind not in ("text", "image"):
             raise ValidationException("Only text and image fragments can be deleted")
 
-        # Clean up image file if this is an image fragment
+        # Clean up image file + ownership record if this is an image fragment
         if fragment.kind == "image" and fragment.data and "image_id" in fragment.data:
+            image_id = fragment.data["image_id"]
             image_store: ImageStore = request.app.state.image_store
-            image_store.delete(fragment.data["image_id"])
+            image_store.delete(image_id)
+            await db_session.execute(
+                ImageOwnerRow.__table__.delete().where(
+                    ImageOwnerRow.image_id == image_id
+                )
+            )
 
         await db_session.delete(fragment)
         await db_session.commit()
@@ -319,8 +336,6 @@ class SearchController(Controller):
         logbook = await _get_or_create_logbook(db_session, user_id)
 
         # Join fragments through entries to scope to this user's logbook
-        from sqlalchemy import func
-
         pattern = f"%{q}%"
         result = await db_session.execute(
             select(FragmentRow)
@@ -349,8 +364,10 @@ class ImageController(Controller):
     async def upload_image(
         self,
         request: Request,
+        db_session: AsyncSession,
         data: UploadFile = Body(media_type=RequestEncodingType.MULTI_PART),
     ) -> dict:
+        user_id = _get_user_id(request)
         image_store: ImageStore = request.app.state.image_store
         content = await data.read()
         mime_type = data.content_type or "application/octet-stream"
@@ -358,7 +375,11 @@ class ImageController(Controller):
         try:
             image_id = image_store.save(content, mime_type)
         except ImageStoreError as e:
-            raise ValidationException(str(e))
+            raise ValidationException(str(e)) from e
+
+        # Record ownership so download/delete can be scoped to the uploader.
+        db_session.add(ImageOwnerRow(image_id=image_id, user_id=user_id))
+        await db_session.commit()
 
         return {
             "image_id": image_id,
@@ -367,13 +388,19 @@ class ImageController(Controller):
         }
 
     @get("/{image_id:str}")
-    async def download_image(self, request: Request, image_id: str) -> Response:
-        image_store: ImageStore = request.app.state.image_store
+    async def download_image(
+        self, request: Request, image_id: str, db_session: AsyncSession
+    ) -> Response:
+        user_id = _get_user_id(request)
+        # 404 (not 403) on a non-owner so we don't reveal the image exists.
+        if not await _user_owns_image(db_session, user_id, image_id):
+            raise NotFoundException(f"Image not found: {image_id}")
 
+        image_store: ImageStore = request.app.state.image_store
         try:
             data, mime_type = image_store.load(image_id)
         except ImageStoreError:
-            raise NotFoundException(f"Image not found: {image_id}")
+            raise NotFoundException(f"Image not found: {image_id}") from None
 
         return Response(
             content=data,
@@ -382,9 +409,19 @@ class ImageController(Controller):
         )
 
     @delete("/{image_id:str}", status_code=204)
-    async def delete_image(self, request: Request, image_id: str) -> None:
+    async def delete_image(
+        self, request: Request, image_id: str, db_session: AsyncSession
+    ) -> None:
+        user_id = _get_user_id(request)
+        if not await _user_owns_image(db_session, user_id, image_id):
+            raise NotFoundException(f"Image not found: {image_id}")
+
         image_store: ImageStore = request.app.state.image_store
         deleted = image_store.delete(image_id)
+        await db_session.execute(
+            ImageOwnerRow.__table__.delete().where(ImageOwnerRow.image_id == image_id)
+        )
+        await db_session.commit()
         if not deleted:
             raise NotFoundException(f"Image not found: {image_id}")
 
