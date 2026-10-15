@@ -1,6 +1,7 @@
 """Scoped settings HTTP API (spec §3): /logbook/scopes and /logbook/setting-keys."""
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 
 from lightfall_settings import (
@@ -8,6 +9,8 @@ from lightfall_settings import (
     ScopeId,
     WriteDenied,
     check_write,
+    resolve,
+    role_at_least,
     role_on,
 )
 from litestar import Controller, Request, Response, delete, get, put
@@ -20,7 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from lightfall_logbook.auth import request_groups, request_identity
 from lightfall_logbook.scoped_config import ScopedConfig, UnknownScope
-from lightfall_logbook.scoped_models import ScopedSettingRow, SettingLockRow
+from lightfall_logbook.scoped_models import ScopedSettingRow, SettingAuditRow, SettingLockRow
 from lightfall_logbook.scoped_store import (
     _iso,
     add_audit,
@@ -35,6 +38,10 @@ KEYS_SUBJECT = "lightfall.settings.keys"
 
 class ScopedSettingWrite(BaseModel):
     value: Any = None
+
+
+class LockWrite(BaseModel):
+    reason: str = ""
 
 
 def _precondition_failed(detail: str) -> HTTPException:
@@ -218,3 +225,96 @@ class ScopesController(Controller):
         await db_session.delete(row)
         await db_session.commit()
         await _publish(request, SETTINGS_SUBJECT, {"scope": str(target), "key": key, "version": 0})
+
+    @put("/{scope_id:str}/locks/{key:str}")
+    async def put_lock(
+        self, scope_id: str, key: str, data: LockWrite, request: Request,
+        db_session: AsyncSession,
+    ) -> dict[str, Any]:
+        cfg = _cfg(request)
+        actor, groups = _caller(request)
+        target = _parse_scope(scope_id)
+        chain = _chain(cfg, target)
+        spec, _known = await spec_for(db_session, key)
+        snaps = await load_snapshots(db_session, chain, key)
+        try:
+            check_write(spec=spec, target=target, chain=chain, actor=actor, groups=groups,
+                        snapshots=snaps, action="lock", facility_grants=cfg.facility_grants)
+        except WriteDenied as e:
+            raise _deny(e) from None
+
+        row = await db_session.get(ScopedSettingRow, (str(target), key))
+        if row is None:
+            effective = resolve(spec, snaps).value
+            if effective is not None:
+                row = ScopedSettingRow(scope=str(target), key=key, value=effective, version=1,
+                                       updated_by=actor)
+                db_session.add(row)
+                add_audit(db_session, scope=str(target), key=key, action="set", old=None,
+                          new=effective, actor=actor, agent=_is_agent(request))
+        now = datetime.now(UTC)
+        lock = await db_session.get(SettingLockRow, (str(target), key))
+        if lock is None:
+            lock = SettingLockRow(scope=str(target), key=key, locked_by=actor,
+                                  reason=data.reason, locked_at=now)
+            db_session.add(lock)
+        else:
+            lock.locked_by, lock.reason, lock.locked_at = actor, data.reason, now
+        add_audit(db_session, scope=str(target), key=key, action="lock", old=None,
+                  new={"reason": data.reason}, actor=actor, agent=_is_agent(request))
+        await db_session.commit()
+        version = row.version if row is not None else 0
+        await _publish(request, SETTINGS_SUBJECT,
+                       {"scope": str(target), "key": key, "version": version})
+        return {"scope": str(target), "key": key, "locked_by": actor, "reason": data.reason,
+                "locked_at": _iso(now), "version": version}
+
+    @delete("/{scope_id:str}/locks/{key:str}", status_code=204)
+    async def delete_lock(
+        self, scope_id: str, key: str, request: Request, db_session: AsyncSession
+    ) -> None:
+        cfg = _cfg(request)
+        actor, groups = _caller(request)
+        target = _parse_scope(scope_id)
+        chain = _chain(cfg, target)
+        spec, _known = await spec_for(db_session, key)
+        snaps = await load_snapshots(db_session, chain, key)
+        try:
+            check_write(spec=spec, target=target, chain=chain, actor=actor, groups=groups,
+                        snapshots=snaps, action="unlock", facility_grants=cfg.facility_grants)
+        except WriteDenied as e:
+            raise _deny(e) from None
+        lock = await db_session.get(SettingLockRow, (str(target), key))
+        add_audit(db_session, scope=str(target), key=key, action="unlock",
+                  old={"reason": lock.reason}, new=None, actor=actor, agent=_is_agent(request))
+        await db_session.delete(lock)
+        await db_session.commit()
+        row = await db_session.get(ScopedSettingRow, (str(target), key))
+        await _publish(request, SETTINGS_SUBJECT, {
+            "scope": str(target), "key": key, "version": row.version if row else 0,
+        })
+
+    @get("/{scope_id:str}/audit")
+    async def audit(
+        self, scope_id: str, request: Request, db_session: AsyncSession,
+        key: str | None = None, limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        cfg = _cfg(request)
+        actor, groups = _caller(request)
+        target = _parse_scope(scope_id)
+        chain = _chain(cfg, target)
+        if target.kind == "user":
+            if target.name != actor:
+                raise PermissionDeniedException("Only the user may read their own audit trail")
+        elif not role_at_least(role_on(target, chain, groups, cfg.facility_grants),
+                               "maintainer"):
+            raise PermissionDeniedException(f"maintainer role required on {target}")
+        q = select(SettingAuditRow).where(SettingAuditRow.scope == str(target))
+        if key is not None:
+            q = q.where(SettingAuditRow.key == key)
+        q = q.order_by(SettingAuditRow.id.desc()).limit(max(1, min(limit, 1000)))
+        return [
+            {"id": a.id, "scope": a.scope, "key": a.key, "action": a.action, "old": a.old,
+             "new": a.new, "actor": a.actor, "agent": a.agent, "at": _iso(a.at)}
+            for a in (await db_session.execute(q)).scalars()
+        ]
