@@ -1,0 +1,21 @@
+# Scoped settings server config. Point SCOPES_CONFIG at a copy of this file.
+# The scope tree is authoritative: write endpoints build scope chains from it.
+
+[facility]
+label = "ALS"
+
+[[beamline]]
+name = "7.0.1"
+branches = ["7.0.1.1", "7.0.1.2"]
+
+# Optional; replaces the defaults when present (these ARE the defaults).
+[facility_grants]
+"/beamlines/_all/admin" = "admin"
+"/beamlines/_all/owner" = "owner"
+"/BCG_staff" = "maintainer"
+
+# Pre-approved keys: lightfall_settings.spec_from_dict fields minus "key".
+[seed."voice.wake_word"]
+type = "str"
+scopes = ["branch", "user"]
+operator_writable = true

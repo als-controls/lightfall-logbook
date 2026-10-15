@@ -8,8 +8,10 @@ from pathlib import Path
 from litestar import Litestar, get
 from litestar.di import Provide
 from litestar.middleware.base import DefineMiddleware
+from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from lightfall_logbook import scoped_models  # noqa: F401  (registers tables)
 from lightfall_logbook.api import (
     ImageController,
     LogbookController,
@@ -17,10 +19,17 @@ from lightfall_logbook.api import (
     SettingsController,
 )
 from lightfall_logbook.apikeys import AuthController, ensure_api_key_groups_column
-from lightfall_logbook.auth import CombinedAuthMiddleware
+from lightfall_logbook.auth import (
+    CombinedAuthMiddleware,
+    dev_mode_enabled,
+    keycloak_auth_enabled,
+)
 from lightfall_logbook.events import LogbookEventPublisher
 from lightfall_logbook.image_store import ImageStore
 from lightfall_logbook.models import Base
+from lightfall_logbook.scoped_api import ScopesController, SettingKeysController
+from lightfall_logbook.scoped_config import ScopedConfig, load_scoped_config
+from lightfall_logbook.scoped_store import seed_keys
 
 _DEFAULT_DB_URL = "sqlite+aiosqlite:///logbook.db"
 
@@ -34,12 +43,14 @@ async def health_check() -> dict[str, str]:
 def create_app(
     db_url: str | None = None,
     event_publisher: LogbookEventPublisher | None = None,
+    scoped_config: ScopedConfig | None = None,
 ) -> Litestar:
     """Create and configure the Litestar application.
 
     Args:
         db_url: SQLAlchemy async database URL.  Falls back to
                 ``DATABASE_URL`` env var, then SQLite default.
+        scoped_config: Scope tree / grants / seeds; defaults to ``load_scoped_config()``.
     """
     if db_url is None:
         db_url = os.environ.get("DATABASE_URL", _DEFAULT_DB_URL)
@@ -50,10 +61,24 @@ def create_app(
     if event_publisher is None:
         event_publisher = LogbookEventPublisher(os.environ.get("NATS_URL"))
 
+    if scoped_config is None:
+        scoped_config = load_scoped_config()
+
     async def on_startup() -> None:
+        if keycloak_auth_enabled():
+            if os.environ.get("LOGBOOK_DEV_MODE"):
+                logger.warning("LOGBOOK_DEV_MODE is ignored because Keycloak is configured")
+        elif dev_mode_enabled():
+            logger.warning("DEV MODE: trusting X-User-Id / X-User-Groups headers. Never in prod.")
+        else:
+            logger.error(
+                "No auth configured: set KEYCLOAK_URL and KEYCLOAK_REALM, or LOGBOOK_DEV_MODE=1 "
+                "for local development. All authenticated requests will be refused."
+            )
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
             await conn.run_sync(ensure_api_key_groups_column)
+        await seed_keys(session_factory, scoped_config.seed)
         await event_publisher.connect()
 
     async def on_shutdown() -> None:
@@ -81,6 +106,8 @@ def create_app(
             ImageController,
             SettingsController,
             AuthController,
+            ScopesController,
+            SettingKeysController,
         ],
         on_startup=[on_startup],
         on_shutdown=[on_shutdown],
@@ -89,6 +116,7 @@ def create_app(
     )
     app.state.image_store = image_store
     app.state.logbook_events = event_publisher
+    app.state.scoped_config = scoped_config
     return app
 
 

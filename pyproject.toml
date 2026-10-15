@@ -16,7 +16,11 @@ dependencies = [
     "uvicorn[standard]",
     "httpx",
     "nats-py>=2.6",
+    "lightfall-settings @ git+https://github.com/als-controls/lightfall-settings@v0.1.1",
 ]
+
+[tool.hatch.metadata]
+allow-direct-references = true
 
 [project.optional-dependencies]
 postgres = ["asyncpg>=0.29"]
