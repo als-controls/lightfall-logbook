@@ -34,6 +34,29 @@ uvicorn lightfall_logbook.app:app --reload
 
 Once minted, the secret is sent on subsequent requests as `Authorization: Apikey <secret>`. The middleware accepts either Bearer (Keycloak) or Apikey auth schemes; keys live up to 7 days by default.
 
+## Scoped settings
+
+Settings stored per scope (`facility`, `beamline:<bl>`, `branch:<br>`, `user:<sub>`) with
+role checks from Keycloak group paths, locks, an audit trail and approval of new keys.
+Rules live in [lightfall-settings](https://github.com/als-controls/lightfall-settings).
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/logbook/scopes/chain?bind=<scope>` | Scope chain for a binding, caller's roles, entitled scopes |
+| GET | `/logbook/scopes/{scope}/settings` | Snapshot of one scope (`ETag` / `If-None-Match`) |
+| PUT / DELETE | `/logbook/scopes/{scope}/settings/{key}` | Set (`If-Match: <version>` on update) / reset to inherited |
+| PUT / DELETE | `/logbook/scopes/{scope}/locks/{key}` | Lock / unlock (scope admin) |
+| GET | `/logbook/scopes/{scope}/audit` | Change history (maintainer+; owner for user scopes) |
+| GET | `/logbook/setting-keys?status=` | Key proposals and approvals (maintainer+) |
+| POST | `/logbook/setting-keys/{key}/propose` | Propose a new key's spec |
+| POST | `/logbook/setting-keys/{key}/approve` / `reject` | Facility admin review |
+| DELETE | `/logbook/setting-keys/{key}` | Revoke an approval (facility admin) |
+
+Writes publish `{scope, key, version}` on NATS subject `lightfall.settings.changed`; key reviews
+publish `{key, status}` on `lightfall.settings.keys`. Configure the scope tree with
+`SCOPES_CONFIG` (see `deploy/scopes.example.toml`). Design:
+`lightfall/docs/superpowers/specs/2026-10-15-scoped-settings-design.md`.
+
 ## Local Storage
 
 `lightfall_logbook.local_store.LocalStore` provides offline-first SQLite storage with sync-on-reconnect. Used by the Lightfall Qt client.
