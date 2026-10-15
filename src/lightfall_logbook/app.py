@@ -22,6 +22,7 @@ from lightfall_logbook.auth import CombinedAuthMiddleware
 from lightfall_logbook.events import LogbookEventPublisher
 from lightfall_logbook.image_store import ImageStore
 from lightfall_logbook.models import Base
+from lightfall_logbook.scoped_api import ScopesController
 from lightfall_logbook.scoped_config import ScopedConfig, load_scoped_config
 from lightfall_logbook.scoped_store import seed_keys
 
@@ -90,6 +91,7 @@ def create_app(
             ImageController,
             SettingsController,
             AuthController,
+            ScopesController,
         ],
         on_startup=[on_startup],
         on_shutdown=[on_shutdown],
