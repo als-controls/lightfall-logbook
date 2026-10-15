@@ -6,8 +6,8 @@ Accepts two auth schemes:
 - ``Authorization: Apikey <hex>``  -- looked up in the ``api_keys`` table
 
 In dev mode (no Keycloak env vars configured), unauthenticated requests are
-passed through so the existing ``X-User-Id`` header fallback in
-:func:`lightfall_logbook.api._get_user_id` keeps working.
+passed through so the dev-only ``X-User-Id`` header fallback in
+:func:`request_identity` keeps working.
 
 The middleware always registers; the dev fallthrough is internal so we don't
 need conditional middleware wiring in :mod:`lightfall_logbook.app`.
@@ -19,6 +19,7 @@ import json
 import os
 from typing import Any
 
+from litestar.exceptions import NotAuthorizedException
 from litestar.middleware.base import AbstractMiddleware
 from litestar.types import Receive, Scope, Send
 from loguru import logger
@@ -31,6 +32,25 @@ def keycloak_auth_enabled() -> bool:
         os.environ.get("KEYCLOAK_URL")
         and os.environ.get("KEYCLOAK_REALM")
     )
+
+
+def request_identity(request: Any) -> str:
+    """Return the caller's user id.
+
+    Identity set by :class:`CombinedAuthMiddleware` (bearer or apikey) always
+    wins. The ``X-User-Id`` header and the ``dev-user`` stand-in are dev-only
+    fallbacks: they are never consulted while Keycloak auth is enabled.
+    """
+    state = getattr(request, "state", None)
+    user_id: str | None = getattr(state, "user_id", None)
+    if user_id:
+        return user_id
+    if keycloak_auth_enabled():
+        raise NotAuthorizedException("Missing user identity")
+    header = request.headers.get("X-User-Id")
+    if header:
+        return header
+    return "dev-user"
 
 
 def _get_keycloak_config() -> dict[str, str]:
@@ -145,7 +165,11 @@ class CombinedAuthMiddleware(AbstractMiddleware):
                 logger.debug("JWT validation failed: {}", e)
                 await _send_401(send, "Invalid token")
                 return
-            scope["state"]["user_id"] = claims.get("sub", "")
+            sub = claims.get("sub") or ""
+            if not sub:
+                await _send_401(send, "Token has no subject")
+                return
+            scope["state"]["user_id"] = sub
             scope["state"]["user_claims"] = claims
             scope["state"]["auth_mode"] = "bearer"
             await self.app(scope, receive, send)

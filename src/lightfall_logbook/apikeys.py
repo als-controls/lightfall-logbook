@@ -19,10 +19,10 @@ from __future__ import annotations
 import hashlib
 import secrets
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
-from litestar import Controller, Request, delete, post
+from litestar import Controller, Request, delete, get, post
 from litestar.exceptions import (
-    NotAuthorizedException,
     NotFoundException,
     PermissionDeniedException,
     ValidationException,
@@ -41,7 +41,7 @@ from sqlalchemy import (
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapped, mapped_column
 
-from lightfall_logbook.auth import keycloak_auth_enabled
+from lightfall_logbook.auth import keycloak_auth_enabled, request_identity
 from lightfall_logbook.models import Base
 
 # ---------------------------------------------------------------------------
@@ -218,22 +218,8 @@ class ApiKeyMintResponse(BaseModel):
 
 
 def _get_caller_sub(request: Request) -> str:
-    """Same identity logic as :func:`api._get_user_id`, kept inline to avoid
-    a circular import between ``api`` and ``apikeys``.
-    """
-    user_id: str | None = getattr(
-        getattr(request, "state", None), "user_id", None
-    )
-    if user_id:
-        return user_id
-    user_id = request.headers.get("X-User-Id")
-    if user_id:
-        return user_id
-    if not keycloak_auth_enabled():
-        # Dev mode with no auth header AND no X-User-Id: use a stand-in identity
-        # so endpoints don't crash. Production has middleware-enforced auth.
-        return "dev-user"
-    raise NotAuthorizedException("Missing user identity")
+    """Caller identity; see :func:`lightfall_logbook.auth.request_identity`."""
+    return request_identity(request)
 
 
 class AuthController(Controller):
@@ -280,6 +266,14 @@ class AuthController(Controller):
             scopes=list(row.scopes),
             note=row.note,
         )
+
+    @get("/whoami")
+    async def whoami(self, request: Request) -> dict[str, Any]:
+        """Echo the caller's identity as the server sees it (diagnostics)."""
+        return {
+            "sub": request_identity(request),
+            "auth_mode": getattr(request.state, "auth_mode", None) or "dev",
+        }
 
     @delete("/apikey", status_code=204)
     async def revoke(

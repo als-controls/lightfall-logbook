@@ -14,14 +14,14 @@ from typing import Any
 from litestar import Controller, Request, delete, get, post, put
 from litestar.datastructures import UploadFile
 from litestar.enums import RequestEncodingType
-from litestar.exceptions import NotAuthorizedException, NotFoundException, ValidationException
+from litestar.exceptions import NotFoundException, ValidationException
 from litestar.params import Body
 from litestar.response import Response
 from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from lightfall_logbook.auth import keycloak_auth_enabled
+from lightfall_logbook.auth import request_identity
 from lightfall_logbook.image_store import ImageStore, ImageStoreError
 from lightfall_logbook.models import (
     EntryCreate,
@@ -46,27 +46,8 @@ from lightfall_logbook.models import (
 
 
 def _get_user_id(request: Any) -> str:
-    """Extract user_id from request state (set by Keycloak middleware).
-
-    Falls back to ``X-User-Id`` header for dev/testing when auth is disabled.
-    """
-    # From Keycloak middleware
-    user_id: str | None = getattr(
-        getattr(request, "state", None), "user_id", None
-    )
-    if user_id:
-        return user_id
-
-    # Dev fallback: allow header-based identity
-    user_id = request.headers.get("X-User-Id")
-    if user_id:
-        return user_id
-
-    # When Keycloak is disabled, fall back to a default dev user
-    if not keycloak_auth_enabled():
-        return "dev-user"
-
-    raise NotAuthorizedException("Missing user identity")
+    """Extract the caller's user id. See :func:`lightfall_logbook.auth.request_identity`."""
+    return request_identity(request)
 
 
 async def _get_or_create_logbook(session: AsyncSession, user_id: str) -> LogbookRow:
