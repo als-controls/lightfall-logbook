@@ -7,21 +7,38 @@ from lightfall_settings import (
     ScopeChain,
     ScopeId,
     WriteDenied,
+    check_write,
     role_on,
 )
-from litestar import Controller, Request, Response, get
+from litestar import Controller, Request, Response, delete, get, put
 from litestar.exceptions import HTTPException, NotFoundException, PermissionDeniedException
 from loguru import logger
+from pydantic import BaseModel
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from lightfall_logbook.auth import request_groups, request_identity
 from lightfall_logbook.scoped_config import ScopedConfig, UnknownScope
 from lightfall_logbook.scoped_models import ScopedSettingRow, SettingLockRow
-from lightfall_logbook.scoped_store import _iso, snapshot_etag
+from lightfall_logbook.scoped_store import (
+    _iso,
+    add_audit,
+    load_snapshots,
+    snapshot_etag,
+    spec_for,
+)
 
 SETTINGS_SUBJECT = "lightfall.settings.changed"
 KEYS_SUBJECT = "lightfall.settings.keys"
+
+
+class ScopedSettingWrite(BaseModel):
+    value: Any = None
+
+
+def _precondition_failed(detail: str) -> HTTPException:
+    return HTTPException(status_code=412, detail=detail)
 
 
 def _parse_scope(text: str) -> ScopeId:
@@ -128,3 +145,76 @@ class ScopesController(Controller):
             "etag": etag,
         }
         return Response(content=body, headers={"ETag": etag})
+
+    @put("/{scope_id:str}/settings/{key:str}")
+    async def put_setting(
+        self, scope_id: str, key: str, data: ScopedSettingWrite, request: Request,
+        db_session: AsyncSession,
+    ) -> dict[str, Any]:
+        cfg = _cfg(request)
+        actor, groups = _caller(request)
+        target = _parse_scope(scope_id)
+        chain = _chain(cfg, target)
+        spec, _known = await spec_for(db_session, key)
+        snaps = await load_snapshots(db_session, chain, key)
+        try:
+            value = check_write(
+                spec=spec, target=target, chain=chain, actor=actor, groups=groups,
+                snapshots=snaps, action="set", value=data.value,
+                facility_grants=cfg.facility_grants,
+            )
+        except WriteDenied as e:
+            raise _deny(e) from None
+
+        if_match = request.headers.get("If-Match")
+        row = await db_session.get(ScopedSettingRow, (str(target), key))
+        old = None
+        if row is None:
+            if if_match not in (None, "0"):
+                raise _precondition_failed(f"{key} does not exist at {target}")
+            row = ScopedSettingRow(scope=str(target), key=key, value=value, version=1,
+                                   updated_by=actor)
+            db_session.add(row)
+        else:
+            if if_match != str(row.version):
+                raise _precondition_failed(
+                    f"{key} at {target} is at version {row.version}; send If-Match"
+                )
+            old = row.value
+            row.value = value
+            row.version += 1
+            row.updated_by = actor
+        add_audit(db_session, scope=str(target), key=key, action="set", old=old, new=value,
+                  actor=actor, agent=_is_agent(request))
+        try:
+            await db_session.commit()
+        except IntegrityError:
+            await db_session.rollback()
+            raise _precondition_failed(f"{key} at {target} was created concurrently") from None
+        await _publish(request, SETTINGS_SUBJECT,
+                       {"scope": str(target), "key": key, "version": row.version})
+        return {"scope": str(target), "key": key, "value": row.value, "version": row.version}
+
+    @delete("/{scope_id:str}/settings/{key:str}", status_code=204)
+    async def delete_setting(
+        self, scope_id: str, key: str, request: Request, db_session: AsyncSession
+    ) -> None:
+        cfg = _cfg(request)
+        actor, groups = _caller(request)
+        target = _parse_scope(scope_id)
+        chain = _chain(cfg, target)
+        spec, _known = await spec_for(db_session, key)
+        snaps = await load_snapshots(db_session, chain, key)
+        try:
+            check_write(spec=spec, target=target, chain=chain, actor=actor, groups=groups,
+                        snapshots=snaps, action="delete", facility_grants=cfg.facility_grants)
+        except WriteDenied as e:
+            raise _deny(e) from None
+        row = await db_session.get(ScopedSettingRow, (str(target), key))
+        if row is None:
+            raise NotFoundException(f"{key} is not set at {target}")
+        add_audit(db_session, scope=str(target), key=key, action="delete", old=row.value,
+                  new=None, actor=actor, agent=_is_agent(request))
+        await db_session.delete(row)
+        await db_session.commit()
+        await _publish(request, SETTINGS_SUBJECT, {"scope": str(target), "key": key, "version": 0})
