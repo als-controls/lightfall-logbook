@@ -43,7 +43,12 @@ from sqlalchemy import (
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapped, mapped_column
 
-from lightfall_logbook.auth import keycloak_auth_enabled, request_groups, request_identity
+from lightfall_logbook.auth import (
+    dev_mode_enabled,
+    keycloak_auth_enabled,
+    request_groups,
+    request_identity,
+)
 from lightfall_logbook.models import Base
 
 # ---------------------------------------------------------------------------
@@ -184,9 +189,9 @@ async def lookup_key_by_secret(
         return None
     if _ensure_aware_utc(row.expires_at) <= datetime.now(UTC):
         return None
-    if row.mint_mode == "dev" and keycloak_auth_enabled():
+    if row.mint_mode == "dev" and not dev_mode_enabled():
         logger.warning(
-            "Refusing dev-minted apikey first_eight={} sub={} under Keycloak auth",
+            "Refusing dev-minted apikey first_eight={} sub={} outside dev mode",
             row.first_eight,
             row.sub,
         )

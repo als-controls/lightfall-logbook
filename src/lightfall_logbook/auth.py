@@ -5,7 +5,7 @@ Accepts two auth schemes:
 - ``Authorization: Bearer <jwt>``  -- validated against Keycloak's JWKS endpoint
 - ``Authorization: Apikey <hex>``  -- looked up in the ``api_keys`` table
 
-In dev mode (no Keycloak env vars configured), unauthenticated requests are
+In dev mode (``LOGBOOK_DEV_MODE=1`` and no Keycloak env vars), unauthenticated requests are
 passed through so the dev-only ``X-User-Id`` header fallback in
 :func:`request_identity` keeps working.
 
@@ -34,18 +34,28 @@ def keycloak_auth_enabled() -> bool:
     )
 
 
+def dev_mode_enabled() -> bool:
+    """Header-trusting dev mode: ``LOGBOOK_DEV_MODE=1`` and no Keycloak configured.
+
+    Fail closed: with neither Keycloak nor this flag, requests need valid
+    credentials and none can be supplied, so everything but /health is 401.
+    """
+    flag = os.environ.get("LOGBOOK_DEV_MODE", "").strip().lower()
+    return flag in ("1", "true", "yes") and not keycloak_auth_enabled()
+
+
 def request_identity(request: Any) -> str:
     """Return the caller's user id.
 
     Identity set by :class:`CombinedAuthMiddleware` (bearer or apikey) always
     wins. The ``X-User-Id`` header and the ``dev-user`` stand-in are dev-only
-    fallbacks: they are never consulted while Keycloak auth is enabled.
+    fallbacks: they are only consulted in dev mode (:func:`dev_mode_enabled`).
     """
     state = getattr(request, "state", None)
     user_id: str | None = getattr(state, "user_id", None)
     if user_id:
         return user_id
-    if keycloak_auth_enabled():
+    if not dev_mode_enabled():
         raise NotAuthorizedException("Missing user identity")
     header = request.headers.get("X-User-Id")
     if header:
@@ -58,13 +68,13 @@ def request_groups(request: Any) -> list[str]:
 
     From the bearer's ``groups`` claim or the apikey's mint-time snapshot
     (both set by the middleware). ``X-User-Groups`` (comma-separated) is a
-    dev-only fallback, ignored while Keycloak auth is enabled.
+    dev-only fallback, ignored outside dev mode (:func:`dev_mode_enabled`).
     """
     state = getattr(request, "state", None)
     groups = getattr(state, "user_groups", None)
     if groups is not None:
         return list(groups)
-    if keycloak_auth_enabled():
+    if not dev_mode_enabled():
         return []
     header = request.headers.get("X-User-Groups", "")
     return [g.strip() for g in header.split(",") if g.strip()]
@@ -133,8 +143,8 @@ class CombinedAuthMiddleware(AbstractMiddleware):
     - ``Authorization: Bearer <jwt>``: decode against Keycloak JWKS. Set
       ``state.user_id``, ``state.user_claims``, ``state.auth_mode="bearer"``.
       If Keycloak is not configured, 401 (don't silently accept).
-    - No header: in prod (Keycloak configured) 401, in dev pass through so
-      the X-User-Id fallback in the API layer still works.
+    - No header: 401 unless dev mode is on (see :func:`dev_mode_enabled`), in
+      which case the X-User-Id fallback in the API layer still works.
     - Anything else: 401 (unsupported scheme).
     """
 
@@ -200,7 +210,7 @@ class CombinedAuthMiddleware(AbstractMiddleware):
         if not auth_header:
             # Prod requires auth; dev mode falls through so the X-User-Id
             # header fallback in the API layer keeps working.
-            if keycloak_auth_enabled():
+            if not dev_mode_enabled():
                 await _send_401(send, "Missing Authorization header")
                 return
             await self.app(scope, receive, send)

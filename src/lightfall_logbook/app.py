@@ -8,6 +8,7 @@ from pathlib import Path
 from litestar import Litestar, get
 from litestar.di import Provide
 from litestar.middleware.base import DefineMiddleware
+from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from lightfall_logbook import scoped_models  # noqa: F401  (registers tables)
@@ -18,7 +19,11 @@ from lightfall_logbook.api import (
     SettingsController,
 )
 from lightfall_logbook.apikeys import AuthController, ensure_api_key_groups_column
-from lightfall_logbook.auth import CombinedAuthMiddleware
+from lightfall_logbook.auth import (
+    CombinedAuthMiddleware,
+    dev_mode_enabled,
+    keycloak_auth_enabled,
+)
 from lightfall_logbook.events import LogbookEventPublisher
 from lightfall_logbook.image_store import ImageStore
 from lightfall_logbook.models import Base
@@ -60,6 +65,16 @@ def create_app(
         scoped_config = load_scoped_config()
 
     async def on_startup() -> None:
+        if keycloak_auth_enabled():
+            if os.environ.get("LOGBOOK_DEV_MODE"):
+                logger.warning("LOGBOOK_DEV_MODE is ignored because Keycloak is configured")
+        elif dev_mode_enabled():
+            logger.warning("DEV MODE: trusting X-User-Id / X-User-Groups headers. Never in prod.")
+        else:
+            logger.error(
+                "No auth configured: set KEYCLOAK_URL and KEYCLOAK_REALM, or LOGBOOK_DEV_MODE=1 "
+                "for local development. All authenticated requests will be refused."
+            )
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
             await conn.run_sync(ensure_api_key_groups_column)
