@@ -1,10 +1,13 @@
 """Scoped settings HTTP API (spec §3): /logbook/scopes and /logbook/setting-keys."""
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from typing import Any
 
 from lightfall_settings import (
+    FACILITY,
+    OVERRIDABLE_FIELDS,
     ScopeChain,
     ScopeId,
     WriteDenied,
@@ -12,8 +15,10 @@ from lightfall_settings import (
     resolve,
     role_at_least,
     role_on,
+    spec_from_dict,
+    spec_to_dict,
 )
-from litestar import Controller, Request, Response, delete, get, put
+from litestar import Controller, Request, Response, delete, get, post, put
 from litestar.exceptions import HTTPException, NotFoundException, PermissionDeniedException
 from loguru import logger
 from pydantic import BaseModel
@@ -23,10 +28,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from lightfall_logbook.auth import request_groups, request_identity
 from lightfall_logbook.scoped_config import ScopedConfig, UnknownScope
-from lightfall_logbook.scoped_models import ScopedSettingRow, SettingAuditRow, SettingLockRow
+from lightfall_logbook.scoped_models import (
+    ScopedSettingRow,
+    SettingAuditRow,
+    SettingKeyRow,
+    SettingLockRow,
+)
 from lightfall_logbook.scoped_store import (
     _iso,
     add_audit,
+    is_core_key,
+    key_record,
     load_snapshots,
     snapshot_etag,
     spec_for,
@@ -42,6 +54,57 @@ class ScopedSettingWrite(BaseModel):
 
 class LockWrite(BaseModel):
     reason: str = ""
+
+
+class ProposeBody(BaseModel):
+    spec: dict[str, Any]
+    scope: str
+
+
+class ApproveBody(BaseModel):
+    spec: dict[str, Any] | None = None
+    note: str = ""
+
+
+class RejectBody(BaseModel):
+    note: str = ""
+
+
+def _unprocessable(detail: str) -> HTTPException:
+    return HTTPException(status_code=422, detail=detail)
+
+
+def _require_facility_admin(cfg: ScopedConfig, groups: list[str]) -> None:
+    role = role_on(FACILITY, ScopeChain((FACILITY,)), groups, cfg.facility_grants)
+    if not role_at_least(role, "admin"):
+        raise PermissionDeniedException("facility admin role required")
+
+
+def _proposal_spec(key: str, raw: Any) -> dict[str, Any]:
+    """Validate a proposed spec dict for ``key``; return its canonical dict."""
+    if not isinstance(raw, dict):
+        raise ValueError("spec must be an object")
+    if raw.get("key", key) != key:
+        raise ValueError("spec key does not match the URL")
+    return spec_to_dict(spec_from_dict({**raw, "key": key}))
+
+
+async def _record_proposal(
+    session: AsyncSession, *, key: str, spec_dict: dict[str, Any], scope: ScopeId, actor: str
+) -> SettingKeyRow:
+    row = await session.get(SettingKeyRow, key)
+    now = datetime.now(UTC)
+    if row is None:
+        row = SettingKeyRow(key=key, status="pending", proposed_spec=spec_dict,
+                            proposed_by=actor, proposed_scope=str(scope), proposed_at=now,
+                            note="")
+        session.add(row)
+    elif row.status == "rejected":
+        row.status = "pending"
+        row.proposed_spec, row.proposed_by = spec_dict, actor
+        row.proposed_scope, row.proposed_at = str(scope), now
+        row.reviewed_by = row.reviewed_at = None
+    return row
 
 
 def _precondition_failed(detail: str) -> HTTPException:
@@ -162,7 +225,9 @@ class ScopesController(Controller):
         actor, groups = _caller(request)
         target = _parse_scope(scope_id)
         chain = _chain(cfg, target)
-        spec, _known = await spec_for(db_session, key)
+        spec, known = await spec_for(db_session, key)
+        if not known and target.kind != "user":
+            await self._key_pending(request, db_session, cfg, key, target, chain, actor, groups)
         snaps = await load_snapshots(db_session, chain, key)
         try:
             value = check_write(
@@ -201,6 +266,32 @@ class ScopesController(Controller):
         await _publish(request, SETTINGS_SUBJECT,
                        {"scope": str(target), "key": key, "version": row.version})
         return {"scope": str(target), "key": key, "value": row.value, "version": row.version}
+
+    async def _key_pending(
+        self, request: Request, db_session: AsyncSession, cfg: ScopedConfig, key: str,
+        target: ScopeId, chain: ScopeChain, actor: str, groups: list[str],
+    ) -> None:
+        """Refuse a write of an unapproved key above user scope (spec §3 proposal flow)."""
+        if not role_at_least(role_on(target, chain, groups, cfg.facility_grants), "maintainer"):
+            raise PermissionDeniedException(f"maintainer role required on {target}")
+        row = await db_session.get(SettingKeyRow, key)
+        header = request.headers.get("X-Proposed-Spec")
+        if row is None and header:
+            try:
+                spec_dict = _proposal_spec(key, json.loads(header))
+            except (ValueError, TypeError) as e:
+                logger.info("Ignoring invalid X-Proposed-Spec for {!r}: {}", key, e)
+            else:
+                row = await _record_proposal(db_session, key=key, spec_dict=spec_dict,
+                                             scope=target, actor=actor)
+                await db_session.commit()
+                await _publish(request, KEYS_SUBJECT, {"key": key, "status": "pending"})
+        status = row.status if row is not None else "unproposed"
+        raise HTTPException(
+            status_code=409,
+            detail=f"{key} is not an approved setting yet",
+            extra={"code": "key_pending", "status": status},
+        )
 
     @delete("/{scope_id:str}/settings/{key:str}", status_code=204)
     async def delete_setting(
@@ -318,3 +409,104 @@ class ScopesController(Controller):
              "new": a.new, "actor": a.actor, "agent": a.agent, "at": _iso(a.at)}
             for a in (await db_session.execute(q)).scalars()
         ]
+
+
+class SettingKeysController(Controller):
+    path = "/logbook/setting-keys"
+
+    @get("/")
+    async def list_keys(
+        self, request: Request, db_session: AsyncSession, status: str | None = None
+    ) -> list[dict[str, Any]]:
+        cfg = _cfg(request)
+        _actor, groups = _caller(request)
+        if not any(
+            role_at_least(role_on(s, cfg.tree.chain_for(s), groups, cfg.facility_grants),
+                          "maintainer")
+            for s in cfg.tree.scopes()
+        ):
+            raise PermissionDeniedException("maintainer role required")
+        q = select(SettingKeyRow).order_by(SettingKeyRow.key)
+        if status is not None:
+            q = q.where(SettingKeyRow.status == status)
+        return [key_record(r) for r in (await db_session.execute(q)).scalars()]
+
+    @post("/{key:str}/propose")
+    async def propose(
+        self, key: str, data: ProposeBody, request: Request, db_session: AsyncSession
+    ) -> dict[str, Any]:
+        cfg = _cfg(request)
+        actor, groups = _caller(request)
+        target = _parse_scope(data.scope)
+        chain = _chain(cfg, target)
+        if target.kind == "user" or not role_at_least(
+            role_on(target, chain, groups, cfg.facility_grants), "maintainer"
+        ):
+            raise PermissionDeniedException(f"maintainer role required on {target}")
+        if is_core_key(key):
+            raise HTTPException(status_code=409, detail=f"{key} is a core setting")
+        try:
+            spec_dict = _proposal_spec(key, data.spec)
+        except ValueError as e:
+            raise _unprocessable(str(e)) from None
+        row = await _record_proposal(db_session, key=key, spec_dict=spec_dict, scope=target,
+                                     actor=actor)
+        if row.status == "approved":
+            raise HTTPException(status_code=409, detail=f"{key} is already approved")
+        await db_session.commit()
+        await _publish(request, KEYS_SUBJECT, {"key": key, "status": row.status})
+        return key_record(row)
+
+    @post("/{key:str}/approve")
+    async def approve(
+        self, key: str, data: ApproveBody, request: Request, db_session: AsyncSession
+    ) -> dict[str, Any]:
+        cfg = _cfg(request)
+        actor, groups = _caller(request)
+        _require_facility_admin(cfg, groups)
+        row = await db_session.get(SettingKeyRow, key)
+        if row is None:
+            raise NotFoundException(f"No proposal for {key}")
+        edits = data.spec or {}
+        bad = set(edits) - OVERRIDABLE_FIELDS
+        if bad:
+            raise _unprocessable(f"fields {sorted(bad)} cannot be edited at approval")
+        base = (row.spec if row.status == "approved" else row.proposed_spec) or {"key": key}
+        try:
+            approved = spec_from_dict({**base, **edits, "key": key})
+        except ValueError as e:
+            raise _unprocessable(str(e)) from None
+        row.spec = spec_to_dict(approved)
+        row.status = "approved"
+        row.reviewed_by, row.reviewed_at, row.note = actor, datetime.now(UTC), data.note
+        await db_session.commit()
+        await _publish(request, KEYS_SUBJECT, {"key": key, "status": "approved"})
+        return key_record(row)
+
+    @post("/{key:str}/reject")
+    async def reject(
+        self, key: str, data: RejectBody, request: Request, db_session: AsyncSession
+    ) -> dict[str, Any]:
+        cfg = _cfg(request)
+        actor, groups = _caller(request)
+        _require_facility_admin(cfg, groups)
+        row = await db_session.get(SettingKeyRow, key)
+        if row is None:
+            raise NotFoundException(f"No proposal for {key}")
+        row.status, row.spec = "rejected", None
+        row.reviewed_by, row.reviewed_at, row.note = actor, datetime.now(UTC), data.note
+        await db_session.commit()
+        await _publish(request, KEYS_SUBJECT, {"key": key, "status": "rejected"})
+        return key_record(row)
+
+    @delete("/{key:str}", status_code=204)
+    async def revoke(self, key: str, request: Request, db_session: AsyncSession) -> None:
+        cfg = _cfg(request)
+        _actor, groups = _caller(request)
+        _require_facility_admin(cfg, groups)
+        row = await db_session.get(SettingKeyRow, key)
+        if row is None:
+            raise NotFoundException(f"No record for {key}")
+        await db_session.delete(row)
+        await db_session.commit()
+        await _publish(request, KEYS_SUBJECT, {"key": key, "status": "revoked"})
