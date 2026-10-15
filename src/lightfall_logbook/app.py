@@ -16,7 +16,7 @@ from lightfall_logbook.api import (
     SearchController,
     SettingsController,
 )
-from lightfall_logbook.apikeys import AuthController
+from lightfall_logbook.apikeys import AuthController, ensure_api_key_groups_column
 from lightfall_logbook.auth import CombinedAuthMiddleware
 from lightfall_logbook.events import LogbookEventPublisher
 from lightfall_logbook.image_store import ImageStore
@@ -53,6 +53,7 @@ def create_app(
     async def on_startup() -> None:
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
+            await conn.run_sync(ensure_api_key_groups_column)
         await event_publisher.connect()
 
     async def on_shutdown() -> None:

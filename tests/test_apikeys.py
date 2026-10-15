@@ -6,12 +6,13 @@ from pathlib import Path
 
 import pytest
 from litestar.testing import AsyncTestClient
-from sqlalchemy import select
+from sqlalchemy import inspect, select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from lightfall_logbook.apikeys import (
     ApiKeyRow,
     _hash_secret,
+    lookup_key_by_secret,
     lookup_user_by_secret,
     mint_key,
     revoke_key,
@@ -355,3 +356,55 @@ async def test_duplicate_first_eight_per_user_rejected(session_factory):
         session.add(row2)
         with pytest.raises(IntegrityError):
             await session.commit()
+
+
+async def test_lookup_key_by_secret_returns_groups(session_factory):
+    async with session_factory() as session:
+        secret, _ = await mint_key(
+            session, sub="alice", expires_in_seconds=3600, scopes=[], note="",
+            groups=["/beamlines/7.0.1/viewer"],
+        )
+        await session.commit()
+    async with session_factory() as session:
+        ident = await lookup_key_by_secret(session, secret)
+    assert ident is not None
+    assert ident.sub == "alice"
+    assert ident.groups == ["/beamlines/7.0.1/viewer"]
+
+
+_OLD_API_KEYS_DDL = (
+    "CREATE TABLE api_keys ("
+    " id INTEGER PRIMARY KEY, secret_hash VARCHAR(128) NOT NULL UNIQUE,"
+    " first_eight VARCHAR(16) NOT NULL, sub VARCHAR(256) NOT NULL,"
+    " expires_at DATETIME NOT NULL, scopes JSON NOT NULL, note VARCHAR(512) NOT NULL,"
+    " revoked BOOLEAN NOT NULL, created_at DATETIME NOT NULL)"
+)
+
+
+async def test_startup_migrates_old_api_keys_table(db_url, tmp_path, monkeypatch):
+    engine = create_async_engine(db_url)
+    async with engine.begin() as conn:
+        await conn.execute(text(_OLD_API_KEYS_DDL))
+        await conn.execute(text(
+            "INSERT INTO api_keys (secret_hash, first_eight, sub, expires_at, scopes,"
+            " note, revoked, created_at) VALUES (:h, 'abcdabcd', 'olduser',"
+            " '2999-01-01 00:00:00', '[]', '', 0, '2026-01-01 00:00:00')"
+        ), {"h": _hash_secret("a" * 64)})
+    await engine.dispose()
+
+    monkeypatch.setenv("DATABASE_URL", db_url)
+    monkeypatch.setenv("IMAGE_STORAGE_DIR", str(tmp_path / "images"))
+    monkeypatch.delenv("KEYCLOAK_URL", raising=False)
+    monkeypatch.delenv("KEYCLOAK_REALM", raising=False)
+    async with AsyncTestClient(app=create_app()) as tc:
+        w = await tc.get("/api/v1/auth/whoami", headers={"Authorization": "Apikey " + "a" * 64})
+        assert w.status_code == 200
+        assert w.json() == {"sub": "olduser", "groups": [], "auth_mode": "apikey"}
+
+    engine = create_async_engine(db_url)
+    async with engine.connect() as conn:
+        cols = await conn.run_sync(
+            lambda c: {col["name"] for col in inspect(c).get_columns("api_keys")}
+        )
+    await engine.dispose()
+    assert "kc_groups" in cols

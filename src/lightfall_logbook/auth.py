@@ -53,6 +53,23 @@ def request_identity(request: Any) -> str:
     return "dev-user"
 
 
+def request_groups(request: Any) -> list[str]:
+    """Return the caller's Keycloak group paths.
+
+    From the bearer's ``groups`` claim or the apikey's mint-time snapshot
+    (both set by the middleware). ``X-User-Groups`` (comma-separated) is a
+    dev-only fallback, ignored while Keycloak auth is enabled.
+    """
+    state = getattr(request, "state", None)
+    groups = getattr(state, "user_groups", None)
+    if groups is not None:
+        return list(groups)
+    if keycloak_auth_enabled():
+        return []
+    header = request.headers.get("X-User-Groups", "")
+    return [g.strip() for g in header.split(",") if g.strip()]
+
+
 def _get_keycloak_config() -> dict[str, str]:
     return {
         "url": os.environ["KEYCLOAK_URL"].rstrip("/"),
@@ -145,11 +162,12 @@ class CombinedAuthMiddleware(AbstractMiddleware):
 
         if auth_header.startswith("Apikey "):
             secret = auth_header[len("Apikey "):].strip()
-            sub = await self._lookup_apikey(secret)
-            if not sub:
+            ident = await self._lookup_apikey(secret)
+            if ident is None:
                 await _send_401(send, "Invalid or expired apikey")
                 return
-            scope["state"]["user_id"] = sub
+            scope["state"]["user_id"] = ident.sub
+            scope["state"]["user_groups"] = list(ident.groups)
             scope["state"]["auth_mode"] = "apikey"
             await self.app(scope, receive, send)
             return
@@ -171,6 +189,8 @@ class CombinedAuthMiddleware(AbstractMiddleware):
                 return
             scope["state"]["user_id"] = sub
             scope["state"]["user_claims"] = claims
+            groups = claims.get("groups")
+            scope["state"]["user_groups"] = list(groups) if isinstance(groups, list) else []
             scope["state"]["auth_mode"] = "bearer"
             await self.app(scope, receive, send)
             return
@@ -186,15 +206,15 @@ class CombinedAuthMiddleware(AbstractMiddleware):
 
         await _send_401(send, "Unsupported Authorization scheme")
 
-    async def _lookup_apikey(self, secret: str) -> str | None:
+    async def _lookup_apikey(self, secret: str):  # -> KeyIdentity | None
         if self._session_factory is None or not secret:
             return None
         # Import here to avoid circular imports at module load.
-        from lightfall_logbook.apikeys import lookup_user_by_secret
+        from lightfall_logbook.apikeys import lookup_key_by_secret
 
         async with self._session_factory() as session:
             try:
-                return await lookup_user_by_secret(session, secret)
+                return await lookup_key_by_secret(session, secret)
             except Exception as e:
                 logger.error("Apikey lookup failed: {}", e)
                 return None

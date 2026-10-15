@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import hashlib
 import secrets
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -41,7 +42,7 @@ from sqlalchemy import (
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapped, mapped_column
 
-from lightfall_logbook.auth import keycloak_auth_enabled, request_identity
+from lightfall_logbook.auth import keycloak_auth_enabled, request_groups, request_identity
 from lightfall_logbook.models import Base
 
 # ---------------------------------------------------------------------------
@@ -82,6 +83,12 @@ class ApiKeyRow(Base):
         DateTime(timezone=True), nullable=False
     )
     scopes: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    # Keycloak ``groups`` claim captured at mint time. Column is named
+    # ``kc_groups`` because GROUPS is an SQL keyword (SQLite window frames).
+    # Nullable: rows created before this column existed read as no groups.
+    groups: Mapped[list[str] | None] = mapped_column(
+        "kc_groups", JSON, nullable=True, default=list
+    )
     note: Mapped[str] = mapped_column(String(512), nullable=False, default="")
     revoked: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(
@@ -119,6 +126,7 @@ async def mint_key(
     expires_in_seconds: int,
     scopes: list[str],
     note: str,
+    groups: list[str] | None = None,
 ) -> tuple[str, ApiKeyRow]:
     """Mint a new key for ``sub``.
 
@@ -132,6 +140,7 @@ async def mint_key(
         sub=sub,
         expires_at=datetime.now(UTC) + timedelta(seconds=expires_in_seconds),
         scopes=list(scopes),
+        groups=list(groups or []),
         note=note,
     )
     session.add(row)
@@ -145,10 +154,18 @@ async def mint_key(
     return secret, row
 
 
-async def lookup_user_by_secret(
+@dataclass(frozen=True)
+class KeyIdentity:
+    """Who an apikey belongs to, and the groups snapshotted at mint."""
+
+    sub: str
+    groups: list[str]
+
+
+async def lookup_key_by_secret(
     session: AsyncSession, secret: str
-) -> str | None:
-    """Return the ``sub`` for a valid, un-revoked, un-expired key, else ``None``."""
+) -> KeyIdentity | None:
+    """Return identity for a valid, un-revoked, un-expired key, else ``None``."""
     if not secret:
         return None
     digest = _hash_secret(secret)
@@ -156,13 +173,36 @@ async def lookup_user_by_secret(
         select(ApiKeyRow).where(ApiKeyRow.secret_hash == digest)
     )
     row = result.scalar_one_or_none()
-    if row is None:
-        return None
-    if row.revoked:
+    if row is None or row.revoked:
         return None
     if _ensure_aware_utc(row.expires_at) <= datetime.now(UTC):
         return None
-    return row.sub
+    return KeyIdentity(sub=row.sub, groups=list(row.groups or []))
+
+
+async def lookup_user_by_secret(
+    session: AsyncSession, secret: str
+) -> str | None:
+    """Return the ``sub`` for a valid key, else ``None``."""
+    ident = await lookup_key_by_secret(session, secret)
+    return ident.sub if ident else None
+
+
+def ensure_api_key_groups_column(sync_conn: Any) -> None:
+    """Add ``api_keys.kc_groups`` to databases created before it existed.
+
+    ``Base.metadata.create_all`` creates missing tables but never adds
+    columns to existing ones. Run via ``conn.run_sync`` after ``create_all``.
+    """
+    from sqlalchemy import inspect, text
+
+    insp = inspect(sync_conn)
+    if "api_keys" not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns("api_keys")}
+    if "kc_groups" not in cols:
+        sync_conn.execute(text("ALTER TABLE api_keys ADD COLUMN kc_groups JSON"))
+        logger.info("Added api_keys.kc_groups column")
 
 
 async def revoke_key(
@@ -251,12 +291,20 @@ class AuthController(Controller):
             )
 
         sub = _get_caller_sub(request)
+        claims = getattr(request.state, "user_claims", None) or {}
+        if keycloak_auth_enabled() and "groups" not in claims:
+            logger.warning(
+                "Token for sub={} has no 'groups' claim; key gets no scope roles. "
+                "Check the Keycloak groups mapper (full group path, in access token).",
+                sub,
+            )
         secret, row = await mint_key(
             db_session,
             sub=sub,
             expires_in_seconds=data.expires_in,
             scopes=data.scopes,
             note=data.note,
+            groups=request_groups(request),
         )
         await db_session.commit()
         return ApiKeyMintResponse(
@@ -272,6 +320,7 @@ class AuthController(Controller):
         """Echo the caller's identity as the server sees it (diagnostics)."""
         return {
             "sub": request_identity(request),
+            "groups": request_groups(request),
             "auth_mode": getattr(request.state, "auth_mode", None) or "dev",
         }
 
