@@ -63,3 +63,12 @@ class LogbookEventPublisher:
             {"user_id": user_id, "op": op, "kind": kind, "id": entity_id, "origin": origin}
         ).encode()
         await self._nc.publish(subject_for_user(user_id), payload)
+
+    async def publish(self, subject: str, payload: dict[str, Any]) -> None:
+        """Best-effort publish of a JSON payload on ``subject``."""
+        if self._nc is None:
+            return
+        try:
+            await self._nc.publish(subject, json.dumps(payload).encode())
+        except Exception as exc:
+            logger.warning("Publish to {} failed: {}", subject, exc)

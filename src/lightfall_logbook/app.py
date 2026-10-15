@@ -10,6 +10,7 @@ from litestar.di import Provide
 from litestar.middleware.base import DefineMiddleware
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from lightfall_logbook import scoped_models  # noqa: F401  (registers tables)
 from lightfall_logbook.api import (
     ImageController,
     LogbookController,
@@ -21,6 +22,8 @@ from lightfall_logbook.auth import CombinedAuthMiddleware
 from lightfall_logbook.events import LogbookEventPublisher
 from lightfall_logbook.image_store import ImageStore
 from lightfall_logbook.models import Base
+from lightfall_logbook.scoped_config import ScopedConfig, load_scoped_config
+from lightfall_logbook.scoped_store import seed_keys
 
 _DEFAULT_DB_URL = "sqlite+aiosqlite:///logbook.db"
 
@@ -34,12 +37,14 @@ async def health_check() -> dict[str, str]:
 def create_app(
     db_url: str | None = None,
     event_publisher: LogbookEventPublisher | None = None,
+    scoped_config: ScopedConfig | None = None,
 ) -> Litestar:
     """Create and configure the Litestar application.
 
     Args:
         db_url: SQLAlchemy async database URL.  Falls back to
                 ``DATABASE_URL`` env var, then SQLite default.
+        scoped_config: Scope tree / grants / seeds; defaults to ``load_scoped_config()``.
     """
     if db_url is None:
         db_url = os.environ.get("DATABASE_URL", _DEFAULT_DB_URL)
@@ -50,10 +55,14 @@ def create_app(
     if event_publisher is None:
         event_publisher = LogbookEventPublisher(os.environ.get("NATS_URL"))
 
+    if scoped_config is None:
+        scoped_config = load_scoped_config()
+
     async def on_startup() -> None:
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
             await conn.run_sync(ensure_api_key_groups_column)
+        await seed_keys(session_factory, scoped_config.seed)
         await event_publisher.connect()
 
     async def on_shutdown() -> None:
@@ -89,6 +98,7 @@ def create_app(
     )
     app.state.image_store = image_store
     app.state.logbook_events = event_publisher
+    app.state.scoped_config = scoped_config
     return app
 
 
