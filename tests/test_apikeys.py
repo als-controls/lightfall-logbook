@@ -407,4 +407,52 @@ async def test_startup_migrates_old_api_keys_table(db_url, tmp_path, monkeypatch
             lambda c: {col["name"] for col in inspect(c).get_columns("api_keys")}
         )
     await engine.dispose()
-    assert "kc_groups" in cols
+    assert {"kc_groups", "mint_mode"} <= cols
+
+
+def test_groups_migration_tolerates_concurrent_worker(tmp_path, monkeypatch):
+    """Two workers both see the column missing; the loser must not crash."""
+    import sqlalchemy
+
+    from lightfall_logbook.apikeys import ensure_api_key_groups_column
+
+    engine = sqlalchemy.create_engine(f"sqlite:///{tmp_path / 'race.db'}")
+    with engine.begin() as conn:
+        conn.execute(text(_OLD_API_KEYS_DDL))
+        ensure_api_key_groups_column(conn)  # first worker adds the columns
+
+    class StaleInspector:
+        """What the second worker saw before the first worker's ALTER landed."""
+
+        def __init__(self, conn):
+            pass
+
+        def get_table_names(self):
+            return ["api_keys"]
+
+        def get_columns(self, table):
+            return [{"name": "id"}]
+
+    monkeypatch.setattr(sqlalchemy, "inspect", StaleInspector)
+    with engine.begin() as conn:
+        ensure_api_key_groups_column(conn)  # must not raise "duplicate column"
+    engine.dispose()
+
+
+def test_groups_migration_uses_if_not_exists_on_postgres():
+    from lightfall_logbook.apikeys import ensure_api_key_groups_column
+
+    class FakeConn:
+        class dialect:  # noqa: N801
+            name = "postgresql"
+
+        def __init__(self):
+            self.sql = []
+
+        def execute(self, stmt):
+            self.sql.append(str(stmt))
+
+    conn = FakeConn()
+    ensure_api_key_groups_column(conn)
+    assert conn.sql
+    assert all("ADD COLUMN IF NOT EXISTS" in s for s in conn.sql)

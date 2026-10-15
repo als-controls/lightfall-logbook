@@ -89,6 +89,10 @@ class ApiKeyRow(Base):
     groups: Mapped[list[str] | None] = mapped_column(
         "kc_groups", JSON, nullable=True, default=list
     )
+    # How the key was minted: "bearer" (Keycloak) or "dev" (X-User-Id fallback).
+    # Dev-minted keys carry unverified identity/groups and are refused while
+    # Keycloak auth is enabled. NULL = minted before this column existed.
+    mint_mode: Mapped[str | None] = mapped_column(String(16), nullable=True)
     note: Mapped[str] = mapped_column(String(512), nullable=False, default="")
     revoked: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(
@@ -127,6 +131,7 @@ async def mint_key(
     scopes: list[str],
     note: str,
     groups: list[str] | None = None,
+    mint_mode: str = "dev",
 ) -> tuple[str, ApiKeyRow]:
     """Mint a new key for ``sub``.
 
@@ -141,6 +146,7 @@ async def mint_key(
         expires_at=datetime.now(UTC) + timedelta(seconds=expires_in_seconds),
         scopes=list(scopes),
         groups=list(groups or []),
+        mint_mode=mint_mode,
         note=note,
     )
     session.add(row)
@@ -177,6 +183,13 @@ async def lookup_key_by_secret(
         return None
     if _ensure_aware_utc(row.expires_at) <= datetime.now(UTC):
         return None
+    if row.mint_mode == "dev" and keycloak_auth_enabled():
+        logger.warning(
+            "Refusing dev-minted apikey first_eight={} sub={} under Keycloak auth",
+            row.first_eight,
+            row.sub,
+        )
+        return None
     return KeyIdentity(sub=row.sub, groups=list(row.groups or []))
 
 
@@ -188,21 +201,42 @@ async def lookup_user_by_secret(
     return ident.sub if ident else None
 
 
+# Columns added to ``api_keys`` after it first shipped: name -> SQL type.
+_ADDED_API_KEY_COLUMNS = {"kc_groups": "JSON", "mint_mode": "VARCHAR(16)"}
+
+
 def ensure_api_key_groups_column(sync_conn: Any) -> None:
-    """Add ``api_keys.kc_groups`` to databases created before it existed.
+    """Add post-launch ``api_keys`` columns to databases created before them.
 
     ``Base.metadata.create_all`` creates missing tables but never adds
     columns to existing ones. Run via ``conn.run_sync`` after ``create_all``.
+    Safe when several workers start at once: Postgres uses ``IF NOT EXISTS``;
+    on SQLite a worker that loses the race gets "duplicate column" and moves on.
     """
-    from sqlalchemy import inspect, text
+    import sqlalchemy
+    from sqlalchemy import text
+    from sqlalchemy.exc import OperationalError
 
-    insp = inspect(sync_conn)
+    if sync_conn.dialect.name == "postgresql":
+        for name, sql_type in _ADDED_API_KEY_COLUMNS.items():
+            sync_conn.execute(text(
+                f"ALTER TABLE IF EXISTS api_keys ADD COLUMN IF NOT EXISTS {name} {sql_type}"
+            ))
+        return
+
+    insp = sqlalchemy.inspect(sync_conn)
     if "api_keys" not in insp.get_table_names():
         return
     cols = {c["name"] for c in insp.get_columns("api_keys")}
-    if "kc_groups" not in cols:
-        sync_conn.execute(text("ALTER TABLE api_keys ADD COLUMN kc_groups JSON"))
-        logger.info("Added api_keys.kc_groups column")
+    for name, sql_type in _ADDED_API_KEY_COLUMNS.items():
+        if name in cols:
+            continue
+        try:
+            sync_conn.execute(text(f"ALTER TABLE api_keys ADD COLUMN {name} {sql_type}"))
+            logger.info("Added api_keys.{} column", name)
+        except OperationalError as e:
+            if "duplicate column" not in str(e).lower():
+                raise
 
 
 async def revoke_key(
@@ -305,6 +339,7 @@ class AuthController(Controller):
             scopes=data.scopes,
             note=data.note,
             groups=request_groups(request),
+            mint_mode="bearer" if auth_mode == "bearer" else "dev",
         )
         await db_session.commit()
         return ApiKeyMintResponse(

@@ -149,3 +149,20 @@ async def test_dev_mode_groups_from_header(dev_client):
         "groups": ["/beamlines/7.0.1/admin", "/BCG_staff"],
         "auth_mode": "dev",
     }
+
+
+async def test_dev_minted_key_rejected_once_keycloak_enabled(dev_client, monkeypatch):
+    r = await dev_client.post(
+        "/api/v1/auth/apikey",
+        json={"expires_in": 3600},
+        headers={"X-User-Id": "admin", "X-User-Groups": "/beamlines/_all/admin"},
+    )
+    assert r.status_code == 201
+    secret = r.json()["secret"]
+    ok = await dev_client.get("/api/v1/auth/whoami", headers={"Authorization": f"Apikey {secret}"})
+    assert ok.status_code == 200
+
+    monkeypatch.setenv("KEYCLOAK_URL", "https://kc.example")
+    monkeypatch.setenv("KEYCLOAK_REALM", "als")
+    w = await dev_client.get("/api/v1/auth/whoami", headers={"Authorization": f"Apikey {secret}"})
+    assert w.status_code == 401
