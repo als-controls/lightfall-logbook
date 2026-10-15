@@ -47,8 +47,13 @@ async def spec_for(session: AsyncSession, key: str) -> tuple[SettingSpec, bool]:
     row = await session.get(SettingKeyRow, key)
     if row is not None and row.status == "approved" and row.spec:
         try:
-            return spec_from_dict(row.spec), True
-        except ValueError as e:
+            if not isinstance(row.spec, dict):
+                raise ValueError("stored spec is not an object")
+            spec = spec_from_dict(row.spec)
+            if spec.key != key:
+                raise ValueError(f"stored spec is for {spec.key!r}")
+            return spec, True
+        except (ValueError, TypeError) as e:
             logger.error("Approved spec for {!r} is invalid ({}); treating as unapproved", key, e)
     return user_only_spec(key), False
 
@@ -77,8 +82,10 @@ async def load_snapshots(
     return [ScopeSnapshot(s, settings[str(s)], locks[str(s)]) for s in chain]
 
 
-def snapshot_etag(settings: Mapping[str, int], locks: Mapping[str, str]) -> str:
-    blob = json.dumps([sorted(settings.items()), sorted(locks.items())])
+def snapshot_etag(settings: Mapping[str, Any], locks: Mapping[str, str]) -> str:
+    """ETag over per-key tokens (callers pass version + updated_at + value, so a
+    reset-and-recreate at the same version still changes it) and lock times."""
+    blob = json.dumps([sorted(settings.items()), sorted(locks.items())], default=str)
     return hashlib.sha256(blob.encode()).hexdigest()[:16]
 
 

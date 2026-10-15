@@ -25,6 +25,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.exc import StaleDataError
 
 from lightfall_logbook.auth import request_groups, request_identity
 from lightfall_logbook.scoped_config import ScopedConfig, UnknownScope
@@ -87,6 +88,14 @@ def _proposal_spec(key: str, raw: Any) -> dict[str, Any]:
     if raw.get("key", key) != key:
         raise ValueError("spec key does not match the URL")
     return spec_to_dict(spec_from_dict({**raw, "key": key}))
+
+
+async def _reload_key(session: AsyncSession, key: str) -> SettingKeyRow | None:
+    """Fresh read of a key record (bypasses the identity map after a rollback)."""
+    q = select(SettingKeyRow).where(SettingKeyRow.key == key).execution_options(
+        populate_existing=True
+    )
+    return (await session.execute(q)).scalar_one_or_none()
 
 
 async def _record_proposal(
@@ -169,7 +178,11 @@ class ScopesController(Controller):
         scope = _parse_scope(bind)
         if scope.kind == "user":
             raise NotFoundException("A session binds to facility, a beamline or a branch")
-        chain = _chain(cfg, scope).with_user(actor)
+        base = _chain(cfg, scope)  # 404 for unknown scopes (litestar's 404 is a ValueError)
+        try:
+            chain = base.with_user(actor)
+        except ValueError:
+            raise PermissionDeniedException("Caller identity cannot name a user scope") from None
         entitled = [
             str(s) for s in cfg.tree.scopes()
             if s.kind in ("beamline", "branch")
@@ -199,7 +212,8 @@ class ScopesController(Controller):
             select(SettingLockRow).where(SettingLockRow.scope == str(target))
         )).scalars().all()
         etag = snapshot_etag(
-            {r.key: r.version for r in rows}, {lk.key: _iso(lk.locked_at) or "" for lk in locks}
+            {r.key: [r.version, _iso(r.updated_at), r.value] for r in rows},
+            {lk.key: _iso(lk.locked_at) or "" for lk in locks},
         )
         if request.headers.get("If-None-Match") == etag:
             return Response(content=b"", status_code=304, headers={"ETag": etag})
@@ -253,16 +267,15 @@ class ScopesController(Controller):
                     f"{key} at {target} is at version {row.version}; send If-Match"
                 )
             old = row.value
-            row.value = value
-            row.version += 1
+            row.value = value  # version bumps via version_id_col on flush
             row.updated_by = actor
         add_audit(db_session, scope=str(target), key=key, action="set", old=old, new=value,
                   actor=actor, agent=_is_agent(request))
         try:
             await db_session.commit()
-        except IntegrityError:
+        except (IntegrityError, StaleDataError):
             await db_session.rollback()
-            raise _precondition_failed(f"{key} at {target} was created concurrently") from None
+            raise _precondition_failed(f"{key} at {target} changed concurrently") from None
         await _publish(request, SETTINGS_SUBJECT,
                        {"scope": str(target), "key": key, "version": row.version})
         return {"scope": str(target), "key": key, "value": row.value, "version": row.version}
@@ -284,8 +297,13 @@ class ScopesController(Controller):
             else:
                 row = await _record_proposal(db_session, key=key, spec_dict=spec_dict,
                                              scope=target, actor=actor)
-                await db_session.commit()
-                await _publish(request, KEYS_SUBJECT, {"key": key, "status": "pending"})
+                try:
+                    await db_session.commit()
+                except IntegrityError:  # another proposal for this key landed first
+                    await db_session.rollback()
+                    row = await _reload_key(db_session, key)
+                else:
+                    await _publish(request, KEYS_SUBJECT, {"key": key, "status": "pending"})
         status = row.status if row is not None else "unproposed"
         raise HTTPException(
             status_code=409,
@@ -353,7 +371,13 @@ class ScopesController(Controller):
             lock.locked_by, lock.reason, lock.locked_at = actor, data.reason, now
         add_audit(db_session, scope=str(target), key=key, action="lock", old=None,
                   new={"reason": data.reason}, actor=actor, agent=_is_agent(request))
-        await db_session.commit()
+        try:
+            await db_session.commit()
+        except (IntegrityError, StaleDataError):
+            await db_session.rollback()
+            raise HTTPException(
+                status_code=409, detail=f"{key} at {target} changed concurrently; retry"
+            ) from None
         version = row.version if row is not None else 0
         await _publish(request, SETTINGS_SUBJECT,
                        {"scope": str(target), "key": key, "version": version})
@@ -453,7 +477,14 @@ class SettingKeysController(Controller):
                                      actor=actor)
         if row.status == "approved":
             raise HTTPException(status_code=409, detail=f"{key} is already approved")
-        await db_session.commit()
+        try:
+            await db_session.commit()
+        except IntegrityError:  # a concurrent proposal for this key landed first
+            await db_session.rollback()
+            row = await _reload_key(db_session, key)
+            if row is None or row.status == "approved":
+                raise HTTPException(status_code=409, detail=f"{key} changed concurrently") from None
+            return key_record(row)
         await _publish(request, KEYS_SUBJECT, {"key": key, "status": row.status})
         return key_record(row)
 

@@ -26,6 +26,10 @@ class ScopedSettingRow(Base):
         DateTime(timezone=True), default=_now, onupdate=_now
     )
 
+    # Optimistic concurrency: UPDATE ... WHERE version = <loaded>; a concurrent
+    # writer makes the loser raise StaleDataError (mapped to 412 by the API).
+    __mapper_args__ = {"version_id_col": version}
+
 
 class SettingLockRow(Base):
     __tablename__ = "setting_locks"
