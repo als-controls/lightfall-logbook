@@ -190,7 +190,9 @@ class CombinedAuthMiddleware(AbstractMiddleware):
             scope["state"]["user_id"] = sub
             scope["state"]["user_claims"] = claims
             groups = claims.get("groups")
-            scope["state"]["user_groups"] = list(groups) if isinstance(groups, list) else []
+            scope["state"]["user_groups"] = (
+                [g for g in groups if isinstance(g, str)] if isinstance(groups, list) else []
+            )
             scope["state"]["auth_mode"] = "bearer"
             await self.app(scope, receive, send)
             return

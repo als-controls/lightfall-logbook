@@ -166,3 +166,11 @@ async def test_dev_minted_key_rejected_once_keycloak_enabled(dev_client, monkeyp
     monkeypatch.setenv("KEYCLOAK_REALM", "als")
     w = await dev_client.get("/api/v1/auth/whoami", headers={"Authorization": f"Apikey {secret}"})
     assert w.status_code == 401
+
+
+async def test_non_string_group_claims_are_dropped(kc_client):
+    tc, tokens = kc_client
+    tokens["t5"] = {"sub": "erin", "groups": ["/BCG_staff", 5, None, {"x": 1}]}
+    w = await tc.get("/api/v1/auth/whoami", headers={"Authorization": "Bearer t5"})
+    assert w.status_code == 200
+    assert w.json()["groups"] == ["/BCG_staff"]

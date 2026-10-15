@@ -11,7 +11,8 @@ is persisted; ``first_eight`` is a non-secret handle used for revocation and
 display.
 
 Mint requires a Keycloak Bearer in production. In dev mode (no Keycloak env
-vars), the existing ``X-User-Id`` fallback in :func:`api._get_user_id` is
+vars), the dev-only ``X-User-Id`` fallback in
+:func:`lightfall_logbook.auth.request_identity` is
 honored so local development without a Keycloak server still works.
 """
 from __future__ import annotations
@@ -314,8 +315,8 @@ class AuthController(Controller):
             )
 
         # Mint requires Bearer in prod. In dev mode (no Keycloak configured)
-        # we allow the X-User-Id fallback so the local dev workflow keeps
-        # working without a Keycloak server.
+        # we allow the dev-only X-User-Id fallback (auth.request_identity) so the
+        # local dev workflow keeps working without a Keycloak server.
         auth_mode = getattr(
             getattr(request, "state", None), "auth_mode", None
         )
