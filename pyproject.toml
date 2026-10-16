@@ -16,7 +16,7 @@ dependencies = [
     "uvicorn[standard]",
     "httpx",
     "nats-py>=2.6",
-    "lightfall-settings @ git+https://github.com/als-controls/lightfall-settings@v0.1.1",
+    "lightfall-settings>=0.1.2,<0.2",
 ]
 
 [tool.hatch.metadata]
