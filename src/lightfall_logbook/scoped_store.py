@@ -10,6 +10,7 @@ from typing import Any
 from lightfall_settings import (
     Lock,
     ScopeChain,
+    ScopeId,
     ScopeSnapshot,
     SettingSpec,
     core_registry,
@@ -22,6 +23,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from lightfall_logbook.models import UserSettingRow
 from lightfall_logbook.scoped_models import (
     ScopedSettingRow,
     SettingAuditRow,
@@ -144,4 +146,41 @@ async def seed_keys(session_factory: async_sessionmaker, specs: Iterable[Setting
                 inserted += 1
             except IntegrityError:
                 await session.rollback()
+    return inserted
+
+
+async def migrate_user_settings(session_factory: async_sessionmaker) -> int:
+    """Copy legacy ``user_settings`` rows into user scope (spec section 11, phase 4).
+
+    Idempotent and non-destructive: a key already set at ``user:<id>`` is left alone and
+    the legacy table is not modified. Rows with a beamline are skipped (user scope has no
+    beamline dimension), as are user ids that cannot name a scope. Returns rows inserted.
+    """
+    async with session_factory() as session:
+        legacy = (await session.execute(select(UserSettingRow))).scalars().all()
+    inserted = skipped = 0
+    for row in legacy:
+        if row.beamline:
+            skipped += 1
+            continue
+        try:
+            scope = str(ScopeId("user", row.user_id))
+        except ValueError:
+            skipped += 1
+            continue
+        async with session_factory() as session:
+            if await session.get(ScopedSettingRow, (scope, row.key)) is not None:
+                continue
+            session.add(ScopedSettingRow(scope=scope, key=row.key, value=row.value, version=1,
+                                         updated_by="migration"))
+            add_audit(session, scope=scope, key=row.key, action="migrate", old=None,
+                      new=row.value, actor="migration", agent=False)
+            try:
+                await session.commit()
+                inserted += 1
+            except IntegrityError:
+                await session.rollback()
+    if skipped:
+        logger.info("Legacy settings migration skipped {} row(s) (beamline-specific or "
+                    "unusable user id)", skipped)
     return inserted

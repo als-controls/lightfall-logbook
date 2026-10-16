@@ -29,7 +29,7 @@ from lightfall_logbook.image_store import ImageStore
 from lightfall_logbook.models import Base
 from lightfall_logbook.scoped_api import ScopesController, SettingKeysController
 from lightfall_logbook.scoped_config import ScopedConfig, load_scoped_config
-from lightfall_logbook.scoped_store import seed_keys
+from lightfall_logbook.scoped_store import migrate_user_settings, seed_keys
 
 _DEFAULT_DB_URL = "sqlite+aiosqlite:///logbook.db"
 
@@ -79,6 +79,9 @@ def create_app(
             await conn.run_sync(Base.metadata.create_all)
             await conn.run_sync(ensure_api_key_groups_column)
         await seed_keys(session_factory, scoped_config.seed)
+        moved = await migrate_user_settings(session_factory)
+        if moved:
+            logger.info("Moved {} legacy user setting(s) into user scope", moved)
         await event_publisher.connect()
 
     async def on_shutdown() -> None:
