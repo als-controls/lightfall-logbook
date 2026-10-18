@@ -58,12 +58,12 @@ ALICE = as_("alice")
 
 
 @asynccontextmanager
-async def make_client(tmp_path, monkeypatch):
+async def make_client(tmp_path, monkeypatch, config: str = CONFIG):
     monkeypatch.setenv("DATABASE_URL", f"sqlite+aiosqlite:///{tmp_path / 'scoped.db'}")
     monkeypatch.setenv("IMAGE_STORAGE_DIR", str(tmp_path / "images"))
     monkeypatch.delenv("KEYCLOAK_URL", raising=False)
     monkeypatch.delenv("KEYCLOAK_REALM", raising=False)
     pub = RecordingPublisher()
-    app = create_app(event_publisher=pub, scoped_config=parse_scoped_config(CONFIG))
+    app = create_app(event_publisher=pub, scoped_config=parse_scoped_config(config))
     async with AsyncTestClient(app=app) as tc:
         yield tc, pub

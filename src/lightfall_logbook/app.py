@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Any
 
-from litestar import Litestar, get
+from litestar import Litestar, Request, get
 from litestar.di import Provide
 from litestar.middleware.base import DefineMiddleware
 from loguru import logger
@@ -30,6 +31,7 @@ from lightfall_logbook.models import Base
 from lightfall_logbook.scoped_api import ScopesController, SettingKeysController
 from lightfall_logbook.scoped_config import ScopedConfig, load_scoped_config
 from lightfall_logbook.scoped_store import migrate_user_settings, seed_keys
+from lightfall_logbook.well_known import build_bootstrap
 
 _DEFAULT_DB_URL = "sqlite+aiosqlite:///logbook.db"
 
@@ -38,6 +40,12 @@ _DEFAULT_DB_URL = "sqlite+aiosqlite:///logbook.db"
 async def health_check() -> dict[str, str]:
     """Simple health check endpoint."""
     return {"status": "ok"}
+
+
+@get("/.well-known/lightfall")
+async def well_known_lightfall(request: Request, db_session: AsyncSession) -> dict[str, Any]:
+    """Facility bootstrap for fresh clients: public facility settings, no auth."""
+    return await build_bootstrap(db_session, request.app.state.scoped_config.tree.label)
 
 
 def create_app(
@@ -104,6 +112,7 @@ def create_app(
     app = Litestar(
         route_handlers=[
             health_check,
+            well_known_lightfall,
             LogbookController,
             SearchController,
             ImageController,

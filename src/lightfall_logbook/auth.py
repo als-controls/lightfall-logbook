@@ -148,7 +148,7 @@ class CombinedAuthMiddleware(AbstractMiddleware):
     - Anything else: 401 (unsupported scheme).
     """
 
-    exclude = ["/health"]
+    exclude = ["/health", r"^/\.well-known/lightfall$"]
 
     def __init__(
         self,

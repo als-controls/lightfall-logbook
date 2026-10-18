@@ -31,6 +31,7 @@ uvicorn lightfall_logbook.app:app --reload
 | DELETE | `/logbook/fragments/{id}` | Delete text fragment |
 | POST | `/api/v1/auth/apikey` | Mint a user-scoped API key (requires Bearer in prod) |
 | DELETE | `/api/v1/auth/apikey` | Revoke a user-scoped API key by `first_eight` |
+| GET | `/.well-known/lightfall` | Facility bootstrap for new clients: public facility settings (no auth) |
 
 Once minted, the secret is sent on subsequent requests as `Authorization: Apikey <secret>`. The middleware accepts either Bearer (Keycloak) or Apikey auth schemes; keys live up to 7 days by default.
 
@@ -56,6 +57,11 @@ Writes publish `{scope, key, version}` on NATS subject `lightfall.settings.chang
 publish `{key, status}` on `lightfall.settings.keys`. Configure the scope tree with
 `SCOPES_CONFIG` (see `deploy/scopes.example.toml`). Design:
 `lightfall/docs/superpowers/specs/2026-10-15-scoped-settings-design.md`.
+
+Keys whose spec is `public` (lightfall-settings 0.1.3: sign-on, service URLs, proxy domains,
+assistant) are served from facility scope at `GET /.well-known/lightfall` without auth, so the
+Lightfall setup wizard can configure a fresh install before login. Secret-like keys can never be
+public.
 
 ## Local Storage
 
