@@ -148,7 +148,9 @@ class CombinedAuthMiddleware(AbstractMiddleware):
     - Anything else: 401 (unsupported scheme).
     """
 
-    exclude = ["/health", r"^/\.well-known/lightfall$"]
+    # Anchored: Litestar matches these with findall (search semantics), so an
+    # unanchored "/health" would exempt every path that merely contains it.
+    exclude = [r"^/health$", r"^/\.well-known/lightfall$"]
 
     def __init__(
         self,

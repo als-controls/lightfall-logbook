@@ -73,3 +73,17 @@ def test_facility_id_slugifies_the_label():
     assert facility_id("ALS") == "als"
     assert facility_id("Diamond Light Source") == "diamond-light-source"
     assert facility_id("  ") == "facility"
+
+
+@pytest.mark.parametrize("path", ["/health", WELL_KNOWN])
+def test_auth_exclusions_cover_only_the_public_paths(path):
+    from litestar.middleware._utils import build_exclude_path_pattern
+
+    from lightfall_logbook.auth import CombinedAuthMiddleware
+
+    pattern = build_exclude_path_pattern(exclude=CombinedAuthMiddleware.exclude)
+    assert pattern.findall(path)
+    # Litestar uses findall (search semantics): an unanchored pattern would let any
+    # path that merely contains it skip authentication.
+    for other in (f"/logbook/settings{path}", f"{path}/x", f"/logbook/images{path}"):
+        assert not pattern.findall(other), other
