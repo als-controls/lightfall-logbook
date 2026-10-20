@@ -13,6 +13,8 @@ from typing import Any
 
 from loguru import logger
 
+from lightfall_logbook.nats_capability import new_capability
+
 
 def subject_for_user(user_id: str) -> str:
     """Well-known, subject-safe topic for a user's logbook changes."""
@@ -26,6 +28,7 @@ class LogbookEventPublisher:
     def __init__(self, nats_url: str | None) -> None:
         self._nats_url = nats_url
         self._nc: Any = None
+        self._cap = new_capability()
 
     async def connect(self) -> None:
         if not self._nats_url:
@@ -33,7 +36,7 @@ class LogbookEventPublisher:
         try:
             import nats
 
-            kwargs: dict[str, Any] = {}
+            kwargs: dict[str, Any] = dict(self._cap.connect_kwargs())
             if self._nats_url.startswith("tls://"):
                 kwargs["tls"] = ssl.create_default_context()
             self._nc = await nats.connect(self._nats_url, **kwargs)
