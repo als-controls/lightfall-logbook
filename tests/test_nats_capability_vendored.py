@@ -9,4 +9,4 @@ def test_derive_prefix_known_vectors():
 
 
 def test_vendored_from_marker():
-    assert cap.VENDORED_FROM == "lightfall_utils.ipc.capability v1"
+    assert cap.VENDORED_FROM == "lightfall_utils.ipc.capability v2"
