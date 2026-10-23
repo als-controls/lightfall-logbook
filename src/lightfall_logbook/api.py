@@ -285,9 +285,11 @@ class LogbookController(Controller):
         user_id = _get_user_id(request)
         fragment = await _get_owned_fragment(db_session, user_id, fragment_id)
 
-        # Clean up image file + ownership record if this is an image fragment
-        if fragment.kind == "image" and fragment.data and "image_id" in fragment.data:
-            image_id = fragment.data["image_id"]
+        # Clean up image file + ownership record if this is an image fragment.
+        # fragment.data is client-supplied, so only touch an image the caller
+        # uploaded; never delete another user's file (or a crafted path).
+        image_id = (fragment.data or {}).get("image_id") if fragment.kind == "image" else None
+        if image_id and await _user_owns_image(db_session, user_id, image_id):
             image_store: ImageStore = request.app.state.image_store
             image_store.delete(image_id)
             await db_session.execute(

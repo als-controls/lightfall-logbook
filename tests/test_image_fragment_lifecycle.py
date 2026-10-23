@@ -102,3 +102,29 @@ async def test_readonly_fragment_can_be_deleted_by_owner(client):
 
     entry = (await client.get(f"/logbook/entries/{entry_id}", headers=HEADERS)).json()
     assert entry["fragments"] == []
+
+
+@pytest.mark.asyncio
+async def test_deleting_fragment_never_removes_another_users_image(client, image_dir: Path):
+    """An image fragment may name any image_id; delete only cleans up the caller's own."""
+    png = _make_minimal_png()
+    upload = await client.post(
+        "/logbook/images",
+        files={"file": ("a.png", png, "image/png")},
+        headers={"X-User-Id": "alice"},
+    )
+    image_id = upload.json()["image_id"]
+
+    entry_resp = await client.post("/logbook/entries", json={}, headers=HEADERS)
+    frag_resp = await client.post(
+        f"/logbook/entries/{entry_resp.json()['id']}/fragments",
+        json={"kind": "image", "content": "", "data": {"image_id": image_id}},
+        headers=HEADERS,
+    )
+    fragment_id = frag_resp.json()["id"]
+
+    del_resp = await client.delete(f"/logbook/fragments/{fragment_id}", headers=HEADERS)
+    assert del_resp.status_code == 204
+    assert (image_dir / f"{image_id}.png").exists()
+    get_resp = await client.get(f"/logbook/images/{image_id}", headers={"X-User-Id": "alice"})
+    assert get_resp.status_code == 200

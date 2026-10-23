@@ -4,9 +4,9 @@ set -euo pipefail
 # lightfall-logbook deploy script for Rocky Linux 10 (Proxmox VM)
 # Usage: sudo bash deploy.sh [--repo-url URL]
 
-APP_DIR="/opt/lightfall-logbook"
-APP_USER="lightfall-logbook"
-SERVICE_NAME="lightfall-logbook"
+APP_DIR="/opt/lucid-logbook"  # historical LUCID-era name; matches the live install
+APP_USER="lucid-logbook"
+SERVICE_NAME="lucid-logbook"
 PYTHON="python3"
 REPO_URL="${1:-}"
 
@@ -86,7 +86,7 @@ echo ""
 echo "=== Deployment complete ==="
 echo ""
 echo "Next steps:"
-echo "  1. Edit /opt/lightfall-logbook/.env"
+echo "  1. Edit $APP_DIR/.env"
 echo "  2. sudo systemctl start $SERVICE_NAME"
 echo "  3. sudo systemctl status $SERVICE_NAME"
 echo "  4. journalctl -u $SERVICE_NAME -f    (logs)"
