@@ -24,8 +24,13 @@ class ImageStore:
         self._dir = storage_dir
         self._dir.mkdir(parents=True, exist_ok=True)
 
-    def save(self, data: bytes, mime_type: str) -> str:
-        """Save image bytes, return image_id."""
+    def save(self, data: bytes, mime_type: str, image_id: str | None = None) -> str:
+        """Save image bytes, return image_id.
+
+        ``image_id`` lets an offline-first client keep the id it already put in
+        its fragments; it must be a UUID (it becomes the file name). Omitted,
+        a new one is generated.
+        """
         ext = ALLOWED_MIME_TYPES.get(mime_type)
         if ext is None:
             raise ImageStoreError(
@@ -39,7 +44,13 @@ class ImageStore:
         if len(data) < 8:
             raise ImageStoreError("Image data too small to be valid")
 
-        image_id = str(uuid.uuid4())
+        if image_id is None:
+            image_id = str(uuid.uuid4())
+        else:
+            try:
+                image_id = str(uuid.UUID(image_id))
+            except ValueError:
+                raise ImageStoreError(f"image_id must be a UUID: {image_id!r}") from None
         path = self._dir / f"{image_id}{ext}"
         path.write_bytes(data)
         return image_id

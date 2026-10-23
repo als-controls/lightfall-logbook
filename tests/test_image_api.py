@@ -104,3 +104,77 @@ async def test_upload_rejects_unsupported_type(client):
         headers=HEADERS,
     )
     assert resp.status_code == 400
+
+
+# -- Client-chosen image_id (offline-first Lightfall uploads) ----------------
+
+CLIENT_ID = "0b6f3c1e-2d4a-4f6b-9c8d-7e5f4a3b2c1d"
+
+
+async def _upload(client, headers=HEADERS, image_id: str | None = CLIENT_ID):
+    params = {"image_id": image_id} if image_id is not None else None
+    return await client.post(
+        "/logbook/images",
+        params=params,
+        files={"file": ("test.png", _make_minimal_png(), "image/png")},
+        headers=headers,
+    )
+
+
+@pytest.mark.asyncio
+async def test_upload_keeps_client_image_id(client, image_dir: Path):
+    resp = await _upload(client)
+
+    assert resp.status_code == 201
+    assert resp.json()["image_id"] == CLIENT_ID
+    assert (image_dir / f"{CLIENT_ID}.png").exists()
+    got = await client.get(f"/logbook/images/{CLIENT_ID}", headers=HEADERS)
+    assert got.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_reupload_of_own_image_id_is_idempotent(client, image_dir: Path):
+    assert (await _upload(client)).status_code == 201
+
+    again = await _upload(client)
+
+    assert again.status_code == 201
+    assert again.json()["image_id"] == CLIENT_ID
+    assert sorted(p.name for p in image_dir.iterdir()) == [f"{CLIENT_ID}.png"]
+
+
+@pytest.mark.asyncio
+async def test_upload_rejects_image_id_owned_by_another_user(client):
+    assert (await _upload(client, headers={"X-User-Id": "alice"})).status_code == 201
+
+    resp = await _upload(client, headers=HEADERS)
+
+    assert resp.status_code == 409
+    # alice still owns it; test-user cannot read it
+    assert (await client.get(f"/logbook/images/{CLIENT_ID}", headers=HEADERS)).status_code == 404
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad", ["../../etc/passwd", "not-a-uuid", ""])
+async def test_upload_rejects_non_uuid_image_id(client, image_dir: Path, bad: str):
+    resp = await _upload(client, image_id=bad)
+
+    assert resp.status_code == 400
+    assert list(image_dir.iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_image_fragment_resolves_after_client_id_upload(client):
+    """The fragment's image_id (chosen offline) now names a real, readable image."""
+    await _upload(client)
+    entry = (await client.post("/logbook/entries", json={}, headers=HEADERS)).json()
+    await client.post(
+        f"/logbook/entries/{entry['id']}/fragments",
+        json={"kind": "image", "content": "", "data": {"image_id": CLIENT_ID}},
+        headers=HEADERS,
+    )
+
+    entry_resp = await client.get(f"/logbook/entries/{entry['id']}", headers=HEADERS)
+    frag = entry_resp.json()["fragments"][0]
+    got = await client.get(f"/logbook/images/{frag['data']['image_id']}", headers=HEADERS)
+    assert got.status_code == 200

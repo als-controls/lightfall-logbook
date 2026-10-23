@@ -14,7 +14,7 @@ from typing import Any
 from litestar import Controller, Request, delete, get, post, put
 from litestar.datastructures import UploadFile
 from litestar.enums import RequestEncodingType
-from litestar.exceptions import NotFoundException, ValidationException
+from litestar.exceptions import HTTPException, NotFoundException, ValidationException
 from litestar.params import Body
 from litestar.response import Response
 from loguru import logger
@@ -373,19 +373,41 @@ class ImageController(Controller):
         request: Request,
         db_session: AsyncSession,
         data: UploadFile = Body(media_type=RequestEncodingType.MULTI_PART),
+        image_id: str | None = None,
     ) -> dict:
+        """Store an image. ``?image_id=<uuid>`` keeps a client-chosen id.
+
+        Lightfall names images offline and writes that id into the image
+        fragment, so the server must store the file under the same id.
+        Re-uploading an id the caller already owns is a no-op success (a retry
+        after a lost response); an id owned by someone else is a 409.
+        """
         user_id = _get_user_id(request)
         image_store: ImageStore = request.app.state.image_store
         content = await data.read()
         mime_type = data.content_type or "application/octet-stream"
 
+        if image_id is not None:
+            try:
+                image_id = str(uuid.UUID(image_id))
+            except ValueError:
+                raise ValidationException(f"image_id must be a UUID: {image_id!r}") from None
+            owner = await db_session.scalar(
+                select(ImageOwnerRow.user_id).where(ImageOwnerRow.image_id == image_id)
+            )
+            if owner is not None and owner != user_id:
+                raise HTTPException(status_code=409, detail=f"Image id already in use: {image_id}")
+            if owner == user_id and image_store.exists(image_id):
+                return {"image_id": image_id, "mime_type": mime_type, "size_bytes": len(content)}
+
         try:
-            image_id = image_store.save(content, mime_type)
+            image_id = image_store.save(content, mime_type, image_id=image_id)
         except ImageStoreError as e:
             raise ValidationException(str(e)) from e
 
         # Record ownership so download/delete can be scoped to the uploader.
-        db_session.add(ImageOwnerRow(image_id=image_id, user_id=user_id))
+        # merge: the caller may already own this id (row kept, file was lost).
+        await db_session.merge(ImageOwnerRow(image_id=image_id, user_id=user_id))
         await db_session.commit()
 
         return {
