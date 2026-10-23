@@ -257,12 +257,19 @@ class LogbookController(Controller):
     ) -> FragmentSchema:
         user_id = _get_user_id(request)
         fragment = await _get_owned_fragment(db_session, user_id, fragment_id)
-        if fragment.kind != "text":
-            raise ValidationException("Only text fragments can be edited")
+        # Readonly-ness is enforced by the client UI; the owner may update any
+        # kind. ``kind`` and ``subtype`` stay immutable.
+        if data.data is not None and fragment.kind == "image":
+            old_image_id = (fragment.data or {}).get("image_id")
+            if data.data.get("image_id") != old_image_id:
+                raise ValidationException("An image fragment's image_id cannot be changed")
         if data.content is not None:
             fragment.content = data.content
         if data.position is not None:
             fragment.position = data.position
+        if data.data is not None:
+            # Full replacement with a new dict so the JSON column is flagged dirty.
+            fragment.data = dict(data.data)
         await db_session.commit()
         await db_session.refresh(fragment)
         await _notify(request, user_id, "update", "fragment", fragment.id)
@@ -277,8 +284,6 @@ class LogbookController(Controller):
     ) -> None:
         user_id = _get_user_id(request)
         fragment = await _get_owned_fragment(db_session, user_id, fragment_id)
-        if fragment.kind not in ("text", "image"):
-            raise ValidationException("Only text and image fragments can be deleted")
 
         # Clean up image file + ownership record if this is an image fragment
         if fragment.kind == "image" and fragment.data and "image_id" in fragment.data:

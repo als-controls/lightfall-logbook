@@ -171,18 +171,21 @@ class LocalStore:
         fragment_id: uuid.UUID,
         content: str | None = None,
         position: int | None = None,
+        data: dict[str, Any] | None = None,
     ) -> FragmentSchema | None:
         async with self.session() as s:
             result = await s.execute(
                 select(FragmentRow).where(FragmentRow.id == fragment_id)
             )
             row = result.scalar_one_or_none()
-            if row is None or row.kind != "text":
+            if row is None:
                 return None
             if content is not None:
                 row.content = content
             if position is not None:
                 row.position = position
+            if data is not None:
+                row.data = dict(data)
             row.sync_status = "pending"
             row.updated_at = datetime.now(UTC)
             await s.commit()
@@ -195,7 +198,7 @@ class LocalStore:
                 select(FragmentRow).where(FragmentRow.id == fragment_id)
             )
             row = result.scalar_one_or_none()
-            if row is None or row.kind != "text":
+            if row is None:
                 return False
             row.sync_status = "deleted"
             await s.commit()

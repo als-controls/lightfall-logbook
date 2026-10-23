@@ -85,8 +85,8 @@ async def test_deleting_image_fragment_removes_image_file(client, image_dir: Pat
 
 
 @pytest.mark.asyncio
-async def test_readonly_fragment_cannot_be_deleted(client):
-    """Ensure readonly fragments are still rejected for deletion."""
+async def test_readonly_fragment_can_be_deleted_by_owner(client):
+    """Readonly is a client-side rule; the server lets the owner delete."""
     entry_resp = await client.post("/logbook/entries", json={}, headers=HEADERS)
     entry_id = entry_resp.json()["id"]
 
@@ -98,4 +98,7 @@ async def test_readonly_fragment_cannot_be_deleted(client):
     fragment_id = frag_resp.json()["id"]
 
     del_resp = await client.delete(f"/logbook/fragments/{fragment_id}", headers=HEADERS)
-    assert del_resp.status_code == 400
+    assert del_resp.status_code == 204
+
+    entry = (await client.get(f"/logbook/entries/{entry_id}", headers=HEADERS)).json()
+    assert entry["fragments"] == []

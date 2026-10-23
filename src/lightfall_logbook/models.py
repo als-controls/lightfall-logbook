@@ -164,10 +164,15 @@ class FragmentCreate(BaseModel):
 
 
 class FragmentUpdate(BaseModel):
-    """Payload for updating an existing (text) fragment."""
+    """Payload for updating an existing fragment of any kind.
+
+    ``data``, when given, replaces the stored dict wholesale. ``kind`` and
+    ``subtype`` are immutable and not accepted here.
+    """
 
     content: str | None = None
     position: int | None = None
+    data: dict[str, Any] | None = None
 
 
 class FragmentSchema(BaseModel):
