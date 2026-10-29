@@ -9,6 +9,9 @@ before applying.
     python3 remediate_scoped_settings.py logbook.db --delete user:<sub>:tiled_beamline \\
         --delete user:<sub>:ipc_topic_prefix --apply --reason "7.0.1.1 incident"
     python3 remediate_scoped_settings.py logbook.db --convert-device-rows --apply
+    python3 remediate_scoped_settings.py logbook.db \\
+        --set 'branch:7.0.1.1:tiled_beamline="7.0.1.1"' \\
+        --set branch:7.0.1.1:device_backends=@rows.json --apply
 
 Every change writes a ``setting_audit`` row (actor ``remediation``). ``--convert-device-rows``
 rewrites list-shaped ``device_backends`` as ``{row id: row}``, the union shape
@@ -139,6 +142,62 @@ def convert_device_rows(conn: sqlite3.Connection, reason: str = "") -> list[tupl
     return done
 
 
+def check_value(scope: str, key: str, value: Any) -> None:
+    """The lightfall-settings 0.1.4 rules this script knows; ValueError if broken."""
+    kind = scope.partition(":")[0]
+    if key in USER_FORBIDDEN:
+        if kind not in ("beamline", "branch"):
+            raise ValueError(f"{key} may only be set at beamline or branch scope")
+        if not isinstance(value, str):
+            raise ValueError(f"{key} must be a string")
+    if key in UNION_ROW_KEYS:
+        if kind not in ("beamline", "branch", "user"):
+            raise ValueError(f"{key} may only be set at beamline, branch or user scope")
+        if not isinstance(value, dict) or not value:
+            raise ValueError(f"{key} must be a non-empty object keyed by row id")
+        for rid, item in value.items():
+            ok = isinstance(item, bool) if key != "device_backends" else (
+                isinstance(item, dict) and item.get("id") == rid and "type" in item)
+            if not ok:
+                raise ValueError(f"{key}: bad item {rid!r}")
+
+
+def put(conn: sqlite3.Connection, scope: str, key: str, value: Any, reason: str = "") -> str:
+    check_value(scope, key, value)
+    row = conn.execute("SELECT value, version FROM scoped_settings WHERE scope = ? AND key = ?",
+                       (scope, key)).fetchone()
+    if row is None:
+        conn.execute(
+            "INSERT INTO scoped_settings (scope, key, value, version, updated_by, updated_at) "
+            "VALUES (?, ?, ?, 1, ?, ?)", (scope, key, json.dumps(value), ACTOR, _now()))
+        old, verb = None, "created"
+    else:
+        conn.execute(
+            "UPDATE scoped_settings SET value = ?, version = ?, updated_by = ?, updated_at = ? "
+            "WHERE scope = ? AND key = ?",
+            (json.dumps(value), row[1] + 1, ACTOR, _now(), scope, key))
+        old, verb = _load(row[0]), "updated"
+    _audit_row(conn, scope, key, "set", old, value, reason)
+    return verb
+
+
+def _parse_set(text: str) -> tuple[str, str, Any]:
+    target, eq, raw = text.partition("=")
+    if not eq:
+        raise argparse.ArgumentTypeError(f"expected KIND:NAME:KEY=JSON, got {text!r}")
+    scope, key = _split_target(target)
+    try:
+        if raw.startswith("@"):
+            with open(raw[1:], encoding="utf-8") as fh:
+                value = json.load(fh)
+        else:
+            value = json.loads(raw)
+        check_value(scope, key, value)
+    except (OSError, ValueError) as e:
+        raise argparse.ArgumentTypeError(f"{target}: {e}") from None
+    return scope, key, value
+
+
 def _split_target(text: str) -> tuple[str, str]:
     kind, _, rest = text.partition(":")
     name, sep, key = rest.partition(":")
@@ -152,6 +211,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("db", help="path to logbook.db")
     ap.add_argument("--delete", action="append", default=[], type=_split_target,
                     metavar="KIND:NAME:KEY", help="delete one scoped value (repeatable)")
+    ap.add_argument("--set", action="append", default=[], type=_parse_set,
+                    metavar="KIND:NAME:KEY=JSON",
+                    help="set one scoped value; JSON inline or @file (repeatable)")
     ap.add_argument("--convert-device-rows", action="store_true",
                     help="rewrite list-shaped device rows in the union shape")
     ap.add_argument("--reason", default="", help="recorded in the audit actor")
@@ -164,16 +226,19 @@ def main(argv: list[str] | None = None) -> int:
         print("== audit")
         for f in audit(conn):
             print(f"{f['table']:15} {f['scope']} {f['key']}: {'; '.join(f['reasons'])}")
-        if not (args.delete or args.convert_device_rows):
+        if not (args.delete or args.set or args.convert_device_rows):
             return 0
         if not args.apply:
             print("== dry run; would", *(f"delete {s} {k}" for s, k in args.delete),
+                  *(f"set {s} {k} = {json.dumps(v)}" for s, k, v in args.set),
                   "and convert device rows" if args.convert_device_rows else "", sep="\n  ")
             return 0
         with conn:  # one transaction
             for scope, key in args.delete:
                 print(("deleted" if delete(conn, scope, key, args.reason) else "absent "),
                       scope, key)
+            for scope, key, value in args.set:
+                print(put(conn, scope, key, value, args.reason), scope, key)
             if args.convert_device_rows:
                 for scope, key in convert_device_rows(conn, args.reason):
                     print("converted", scope, key)

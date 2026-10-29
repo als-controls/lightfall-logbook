@@ -117,3 +117,32 @@ def test_convert_device_rows_matches_the_union_spec(db):
 def test_bad_target_is_rejected(db):
     with pytest.raises(SystemExit):
         rem.main([str(db), "--delete", "tiled_beamline"])
+
+
+def test_set_creates_and_updates_with_audit(db, tmp_path):
+    rows = tmp_path / "rows.json"
+    rows.write_text(json.dumps({"a": ROWS[0]}))
+    rem.main([str(db), "--set", 'branch:7.0.1.1:tiled_beamline="7.0.1.1"',
+              "--set", f"branch:7.0.1.1:device_backends=@{rows}", "--apply"])
+    rem.main([str(db), "--set", 'branch:7.0.1.1:tiled_beamline="7.0.1.2"', "--apply"])
+    got = _rows(db)
+    assert got[("branch:7.0.1.1", "tiled_beamline")] == "7.0.1.2"
+    assert got[("branch:7.0.1.1", "device_backends")] == {"a": ROWS[0]}
+    assert deployment_registry().get("device_backends").validate({"a": ROWS[0]})
+    conn = sqlite3.connect(db)
+    versions = conn.execute("SELECT version FROM scoped_settings WHERE scope = "
+                            "'branch:7.0.1.1' AND key = 'tiled_beamline'").fetchone()
+    n_audit = conn.execute("SELECT count(*) FROM setting_audit").fetchone()
+    conn.close()
+    assert versions == (2,) and n_audit == (3,)
+
+
+@pytest.mark.parametrize("arg", [
+    'user:ron:tiled_beamline="12.0.2.1"',          # identity key at user scope
+    "branch:7.0.1.1:tiled_beamline=7",             # not a string
+    'branch:7.0.1.1:device_backends=[{"id": "a", "type": "mock"}]',  # list shape
+    'branch:7.0.1.1:device_backends={"a": {"id": "b", "type": "mock"}}',  # id mismatch
+])
+def test_set_rejects_values_the_spec_forbids(db, arg):
+    with pytest.raises(SystemExit):
+        rem.main([str(db), "--set", arg, "--apply"])
