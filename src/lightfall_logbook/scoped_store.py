@@ -13,7 +13,7 @@ from lightfall_settings import (
     ScopeId,
     ScopeSnapshot,
     SettingSpec,
-    core_registry,
+    deployment_registry,
     spec_from_dict,
     spec_to_dict,
     user_only_spec,
@@ -31,7 +31,8 @@ from lightfall_logbook.scoped_models import (
     SettingLockRow,
 )
 
-_CORE = core_registry()
+# Core plus deployment specs: server-enforced, never proposed, approved or seeded.
+_CORE = deployment_registry()
 
 
 def _iso(dt: datetime | None) -> str | None:
@@ -62,6 +63,21 @@ async def spec_for(session: AsyncSession, key: str) -> tuple[SettingSpec, bool]:
 
 def is_core_key(key: str) -> bool:
     return _CORE.is_declared(key)
+
+
+async def declared_specs(session: AsyncSession, keys: Iterable[str]) -> dict[str, SettingSpec]:
+    """Server-trusted specs for the core/approved ones among ``keys`` (one query)."""
+    keys = set(keys)
+    out = {k: _CORE.get(k) for k in keys if _CORE.is_declared(k)}
+    rest = keys - out.keys()
+    if rest:
+        q = select(SettingKeyRow.key).where(SettingKeyRow.key.in_(rest),
+                                            SettingKeyRow.status == "approved")
+        for key in (await session.execute(q)).scalars():
+            spec, known = await spec_for(session, key)
+            if known:
+                out[key] = spec
+    return out
 
 
 async def load_snapshots(
@@ -154,7 +170,8 @@ async def migrate_user_settings(session_factory: async_sessionmaker) -> int:
 
     Idempotent and non-destructive: a key already set at ``user:<id>`` is left alone and
     the legacy table is not modified. Rows with a beamline are skipped (user scope has no
-    beamline dimension), as are user ids that cannot name a scope. Returns rows inserted.
+    beamline dimension), as are user ids that cannot name a scope and keys whose spec
+    forbids user scope. Returns rows inserted.
     """
     async with session_factory() as session:
         legacy = (await session.execute(select(UserSettingRow))).scalars().all()
@@ -169,6 +186,10 @@ async def migrate_user_settings(session_factory: async_sessionmaker) -> int:
             skipped += 1
             continue
         async with session_factory() as session:
+            spec, _known = await spec_for(session, row.key)
+            if not spec.allows("user"):
+                skipped += 1
+                continue
             if await session.get(ScopedSettingRow, (scope, row.key)) is not None:
                 continue
             session.add(ScopedSettingRow(scope=scope, key=row.key, value=row.value, version=1,
@@ -181,6 +202,6 @@ async def migrate_user_settings(session_factory: async_sessionmaker) -> int:
             except IntegrityError:
                 await session.rollback()
     if skipped:
-        logger.info("Legacy settings migration skipped {} row(s) (beamline-specific or "
-                    "unusable user id)", skipped)
+        logger.info("Legacy settings migration skipped {} row(s) (beamline-specific, "
+                    "unusable user id, or not allowed at user scope)", skipped)
     return inserted

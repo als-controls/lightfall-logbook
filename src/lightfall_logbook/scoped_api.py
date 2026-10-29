@@ -1,6 +1,7 @@
 """Scoped settings HTTP API (spec §3): /logbook/scopes and /logbook/setting-keys."""
 from __future__ import annotations
 
+import dataclasses
 import json
 from datetime import UTC, datetime
 from typing import Any
@@ -38,6 +39,7 @@ from lightfall_logbook.scoped_models import (
 from lightfall_logbook.scoped_store import (
     _iso,
     add_audit,
+    declared_specs,
     is_core_key,
     key_record,
     load_snapshots,
@@ -208,6 +210,10 @@ class ScopesController(Controller):
         rows = (await db_session.execute(
             select(ScopedSettingRow).where(ScopedSettingRow.scope == str(target))
         )).scalars().all()
+        # Omit values written before their spec forbade this scope (e.g. a user-scope
+        # tiled_beamline): clients resolve with their own registry and would let them win.
+        specs = await declared_specs(db_session, (r.key for r in rows))
+        rows = [r for r in rows if r.key not in specs or specs[r.key].allows(target.kind)]
         locks = (await db_session.execute(
             select(SettingLockRow).where(SettingLockRow.scope == str(target))
         )).scalars().all()
@@ -321,6 +327,11 @@ class ScopesController(Controller):
         chain = _chain(cfg, target)
         spec, _known = await spec_for(db_session, key)
         snaps = await load_snapshots(db_session, chain, key)
+        if not spec.allows(target.kind):
+            # A value stranded by a stricter spec: removable by whoever may write the
+            # scope; locks don't apply since the value is ignored anyway.
+            spec = dataclasses.replace(spec, scopes=spec.scopes | {target.kind})
+            snaps = []
         try:
             check_write(spec=spec, target=target, chain=chain, actor=actor, groups=groups,
                         snapshots=snaps, action="delete", facility_grants=cfg.facility_grants)
