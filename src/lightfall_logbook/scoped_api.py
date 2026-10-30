@@ -39,6 +39,7 @@ from lightfall_logbook.scoped_models import (
 from lightfall_logbook.scoped_store import (
     _iso,
     add_audit,
+    approved_specs,
     declared_specs,
     is_core_key,
     key_record,
@@ -174,7 +175,8 @@ class ScopesController(Controller):
     path = "/logbook/scopes"
 
     @get("/chain")
-    async def chain(self, request: Request, bind: str = "facility") -> dict[str, Any]:
+    async def chain(self, request: Request, db_session: AsyncSession,
+                    bind: str = "facility") -> dict[str, Any]:
         cfg = _cfg(request)
         actor, groups = _caller(request)
         scope = _parse_scope(bind)
@@ -196,6 +198,7 @@ class ScopesController(Controller):
         ]
         entitled = [e["scope"] for e in tree if e["role"] is not None]
         return {
+            "specs": await approved_specs(db_session),  # so every client resolves alike
             "chain": [str(s) for s in chain],
             "roles": {str(s): _role_label(s, chain, actor, groups, cfg) for s in chain},
             "entitled": entitled,

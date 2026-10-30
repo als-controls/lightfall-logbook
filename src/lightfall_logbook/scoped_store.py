@@ -61,6 +61,17 @@ async def spec_for(session: AsyncSession, key: str) -> tuple[SettingSpec, bool]:
     return user_only_spec(key), False
 
 
+async def approved_specs(session: AsyncSession) -> list[dict[str, Any]]:
+    """Every approved (non-core) spec, serialized, skipping stored specs that don't parse."""
+    q = select(SettingKeyRow.key).where(SettingKeyRow.status == "approved")
+    out = []
+    for key in (await session.execute(q)).scalars():
+        spec, known = await spec_for(session, key)
+        if known and not _CORE.is_declared(key):
+            out.append(spec_to_dict(spec))
+    return sorted(out, key=lambda d: d["key"])
+
+
 def is_core_key(key: str) -> bool:
     return _CORE.is_declared(key)
 

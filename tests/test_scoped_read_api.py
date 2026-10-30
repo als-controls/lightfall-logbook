@@ -74,3 +74,12 @@ async def test_chain_lists_the_scope_tree_with_the_callers_roles(env):
     ]
     alice = (await tc.get("/logbook/scopes/chain", headers=ALICE)).json()
     assert [e["role"] for e in alice["tree"]] == [None, None, None]
+
+
+async def test_chain_carries_approved_specs_for_every_caller(env):
+    """Approvals reach every client's resolver, not only maintainers' (who can list keys)."""
+    tc, _ = env
+    body = (await tc.get("/logbook/scopes/chain", headers=ALICE)).json()
+    specs = {s["key"]: s for s in body["specs"]}
+    assert specs["tiled.url"]["scopes"] == ["beamline", "branch", "facility", "user"]  # seeded
+    assert "plugins.enabled" not in specs   # core specs are the client's own already
