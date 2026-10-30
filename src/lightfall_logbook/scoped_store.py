@@ -24,8 +24,10 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from lightfall_logbook.models import UserSettingRow
+from lightfall_logbook.scoped_config import ScopeTree
 from lightfall_logbook.scoped_models import (
     ScopedSettingRow,
+    ScopeNodeRow,
     SettingAuditRow,
     SettingKeyRow,
     SettingLockRow,
@@ -147,6 +149,39 @@ def key_record(row: SettingKeyRow) -> dict[str, Any]:
         "reviewed_at": _iso(row.reviewed_at),
         "note": row.note,
     }
+
+
+async def load_tree(session: AsyncSession, label: str) -> ScopeTree:
+    """The scope tree as stored, beamlines and branches in the order they were added."""
+    q = select(ScopeNodeRow).order_by(ScopeNodeRow.created_at, ScopeNodeRow.scope)
+    beamlines: list[str] = []
+    parent: dict[str, str] = {}
+    for row in (await session.execute(q)).scalars():
+        sid = ScopeId.parse(row.scope)
+        if sid.kind == "beamline":
+            beamlines.append(sid.name)
+        elif sid.kind == "branch" and row.parent:
+            parent[sid.name] = ScopeId.parse(row.parent).name
+    return ScopeTree(label, tuple(beamlines), {b: p for b, p in parent.items()
+                                              if p in beamlines})
+
+
+async def seed_tree(session_factory: async_sessionmaker, tree: ScopeTree) -> int:
+    """Add the configured beamlines/branches the database lacks; never removes any."""
+    inserted = 0
+    nodes = [(f"beamline:{b}", None) for b in tree.beamlines] + [
+        (f"branch:{b}", f"beamline:{p}") for b, p in tree.branch_parent.items()]
+    for scope, parent in nodes:
+        async with session_factory() as session:
+            if await session.get(ScopeNodeRow, scope) is not None:
+                continue
+            session.add(ScopeNodeRow(scope=scope, parent=parent, created_by="config"))
+            try:
+                await session.commit()
+                inserted += 1
+            except IntegrityError:  # another worker seeded it first
+                await session.rollback()
+    return inserted
 
 
 async def seed_keys(session_factory: async_sessionmaker, specs: Iterable[SettingSpec]) -> int:

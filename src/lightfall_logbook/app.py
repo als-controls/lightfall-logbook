@@ -30,7 +30,7 @@ from lightfall_logbook.image_store import ImageStore
 from lightfall_logbook.models import Base
 from lightfall_logbook.scoped_api import ScopesController, SettingKeysController
 from lightfall_logbook.scoped_config import ScopedConfig, load_scoped_config
-from lightfall_logbook.scoped_store import migrate_user_settings, seed_keys
+from lightfall_logbook.scoped_store import migrate_user_settings, seed_keys, seed_tree
 from lightfall_logbook.well_known import build_bootstrap
 
 _DEFAULT_DB_URL = "sqlite+aiosqlite:///logbook.db"
@@ -86,6 +86,7 @@ def create_app(
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
             await conn.run_sync(ensure_api_key_groups_column)
+        await seed_tree(session_factory, scoped_config.tree)
         await seed_keys(session_factory, scoped_config.seed)
         moved = await migrate_user_settings(session_factory)
         if moved:

@@ -68,3 +68,19 @@ class SettingKeyRow(Base):
     reviewed_by: Mapped[str | None] = mapped_column(String(256), nullable=True)
     reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     note: Mapped[str] = mapped_column(String(1000), nullable=False, default="")
+
+
+class ScopeNodeRow(Base):
+    """One beamline or branch of the scope tree (facility and users are implicit).
+
+    Seeded from SCOPES_CONFIG at startup (add-only); facility admins add and remove
+    nodes through the API afterwards.
+    """
+
+    __tablename__ = "scope_nodes"
+
+    scope: Mapped[str] = mapped_column(String(300), primary_key=True)  # beamline:/branch:
+    parent: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    label: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    created_by: Mapped[str] = mapped_column(String(256), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)

@@ -1,5 +1,6 @@
 # Scoped settings server config. Point SCOPES_CONFIG at a copy of this file.
-# The scope tree is authoritative: write endpoints build scope chains from it.
+# The beamlines/branches here seed the server's scope tree at startup (add-only); after
+# that facility admins manage the tree in Lightfall (Settings > Advanced > Scopes).
 
 [facility]
 label = "ALS"

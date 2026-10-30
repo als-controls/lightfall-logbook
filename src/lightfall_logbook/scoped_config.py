@@ -19,7 +19,9 @@ Loaded from the TOML file named by ``SCOPES_CONFIG``. Example::
     scopes = ["branch", "user"]
     operator_writable = true
 
-The tree is authoritative: write endpoints build chains from it, never from
+The configured tree seeds the database at startup (add-only); after that the
+database is authoritative and facility admins add or remove beamlines and branches
+through ``/logbook/scopes/tree``. Write endpoints build chains from it, never from
 the client. Scopes not in the tree (other than users) do not exist.
 """
 from __future__ import annotations

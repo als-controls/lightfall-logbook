@@ -29,9 +29,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.exc import StaleDataError
 
 from lightfall_logbook.auth import request_groups, request_identity
-from lightfall_logbook.scoped_config import ScopedConfig, UnknownScope
+from lightfall_logbook.scoped_config import ScopedConfig, ScopeTree, UnknownScope
 from lightfall_logbook.scoped_models import (
     ScopedSettingRow,
+    ScopeNodeRow,
     SettingAuditRow,
     SettingKeyRow,
     SettingLockRow,
@@ -44,6 +45,7 @@ from lightfall_logbook.scoped_store import (
     is_core_key,
     key_record,
     load_snapshots,
+    load_tree,
     snapshot_etag,
     spec_for,
 )
@@ -58,6 +60,12 @@ class ScopedSettingWrite(BaseModel):
 
 class LockWrite(BaseModel):
     reason: str = ""
+
+
+class ScopeNodeBody(BaseModel):
+    scope: str
+    parent: str | None = None
+    label: str = ""
 
 
 class ProposeBody(BaseModel):
@@ -134,9 +142,14 @@ def _cfg(request: Request) -> ScopedConfig:
     return request.app.state.scoped_config
 
 
-def _chain(cfg: ScopedConfig, scope: ScopeId) -> ScopeChain:
+async def _tree(request: Request, db_session: AsyncSession) -> ScopeTree:
+    # Read per request: the service runs several workers, and any of them may change it.
+    return await load_tree(db_session, _cfg(request).tree.label)
+
+
+def _chain(tree: ScopeTree, scope: ScopeId) -> ScopeChain:
     try:
-        return cfg.tree.chain_for(scope)
+        return tree.chain_for(scope)
     except UnknownScope:
         raise NotFoundException(f"Unknown scope {scope}") from None
 
@@ -178,42 +191,114 @@ class ScopesController(Controller):
     async def chain(self, request: Request, db_session: AsyncSession,
                     bind: str = "facility") -> dict[str, Any]:
         cfg = _cfg(request)
+        tree = await _tree(request, db_session)
         actor, groups = _caller(request)
         scope = _parse_scope(bind)
         if scope.kind == "user":
             raise NotFoundException("A session binds to facility, a beamline or a branch")
-        base = _chain(cfg, scope)  # 404 for unknown scopes (litestar's 404 is a ValueError)
+        base = _chain(tree, scope)  # 404 for unknown scopes (litestar's 404 is a ValueError)
         try:
             chain = base.with_user(actor)
         except ValueError:
             raise PermissionDeniedException("Caller identity cannot name a user scope") from None
-        tree = [
+        nodes = [
             {
                 "scope": str(s),
-                "parent": (f"beamline:{cfg.tree.branch_parent[s.name]}"
+                "parent": (f"beamline:{tree.branch_parent[s.name]}"
                            if s.kind == "branch" else None),
-                "role": role_on(s, cfg.tree.chain_for(s), groups, cfg.facility_grants),
+                "role": role_on(s, tree.chain_for(s), groups, cfg.facility_grants),
             }
-            for s in cfg.tree.scopes() if s.kind in ("beamline", "branch")
+            for s in tree.scopes() if s.kind in ("beamline", "branch")
         ]
-        entitled = [e["scope"] for e in tree if e["role"] is not None]
+        entitled = [e["scope"] for e in nodes if e["role"] is not None]
         return {
             "specs": await approved_specs(db_session),  # so every client resolves alike
             "chain": [str(s) for s in chain],
             "roles": {str(s): _role_label(s, chain, actor, groups, cfg) for s in chain},
             "entitled": entitled,
-            "tree": tree,  # every beamline/branch with the caller's role (console binding)
-            "facility_label": cfg.tree.label,
+            "tree": nodes,  # every beamline/branch with the caller's role (console binding)
+            "facility_label": tree.label,
         }
+
+    @post("/tree", status_code=201)
+    async def add_scope(
+        self, data: ScopeNodeBody, request: Request, db_session: AsyncSession
+    ) -> dict[str, Any]:
+        """Add a beamline, or a branch under an existing beamline (facility admins)."""
+        cfg = _cfg(request)
+        actor, groups = _caller(request)
+        _require_facility_admin(cfg, groups)
+        try:
+            scope = ScopeId.parse(data.scope)
+            parent = ScopeId.parse(data.parent) if data.parent else None
+        except ValueError as e:
+            raise _unprocessable(str(e)) from None
+        if scope.kind not in ("beamline", "branch"):
+            raise _unprocessable("only beamlines and branches can be added")
+        if scope.kind == "beamline" and parent is not None:
+            raise _unprocessable("a beamline has no parent")
+        if scope.kind == "branch":
+            if parent is None or parent.kind != "beamline":
+                raise _unprocessable("a branch needs its beamline as parent")
+            if await db_session.get(ScopeNodeRow, str(parent)) is None:
+                raise _unprocessable(f"{parent} does not exist")
+        if await db_session.get(ScopeNodeRow, str(scope)) is not None:
+            raise HTTPException(status_code=409, detail=f"{scope} already exists")
+        db_session.add(ScopeNodeRow(scope=str(scope), parent=str(parent) if parent else None,
+                                    label=data.label, created_by=actor))
+        add_audit(db_session, scope=str(scope), key="", action="scope_add", old=None,
+                  new={"parent": str(parent) if parent else None, "label": data.label},
+                  actor=actor, agent=_is_agent(request))
+        try:
+            await db_session.commit()
+        except IntegrityError:
+            await db_session.rollback()
+            raise HTTPException(status_code=409, detail=f"{scope} already exists") from None
+        # Every chain starts at facility: clients refresh their chain and the picker.
+        await _publish(request, SETTINGS_SUBJECT, {"scope": "facility", "key": "", "version": 0})
+        return {"scope": str(scope), "parent": str(parent) if parent else None,
+                "label": data.label}
+
+    @delete("/tree/{scope_id:str}", status_code=204)
+    async def remove_scope(
+        self, scope_id: str, request: Request, db_session: AsyncSession
+    ) -> None:
+        """Remove an empty beamline or branch: no branches, settings or locks (facility admins)."""
+        cfg = _cfg(request)
+        actor, groups = _caller(request)
+        _require_facility_admin(cfg, groups)
+        target = _parse_scope(scope_id)
+        row = await db_session.get(ScopeNodeRow, str(target))
+        if row is None:
+            raise NotFoundException(f"Unknown scope {target}")
+        children = (await db_session.execute(
+            select(ScopeNodeRow.scope).where(ScopeNodeRow.parent == str(target)).limit(1)
+        )).first()
+        has_rows = (await db_session.execute(
+            select(ScopedSettingRow.key).where(ScopedSettingRow.scope == str(target)).limit(1)
+        )).first() or (await db_session.execute(
+            select(SettingLockRow.key).where(SettingLockRow.scope == str(target)).limit(1)
+        )).first()
+        if children or has_rows:
+            raise HTTPException(
+                status_code=409,
+                detail=f"{target} still has " + ("branches" if children else "settings"),
+            )
+        add_audit(db_session, scope=str(target), key="", action="scope_remove",
+                  old={"parent": row.parent, "label": row.label}, new=None, actor=actor,
+                  agent=_is_agent(request))
+        await db_session.delete(row)
+        await db_session.commit()
+        await _publish(request, SETTINGS_SUBJECT, {"scope": "facility", "key": "", "version": 0})
 
     @get("/{scope_id:str}/settings")
     async def snapshot(
         self, scope_id: str, request: Request, db_session: AsyncSession
     ) -> Response[Any]:
-        cfg = _cfg(request)
+        tree = await _tree(request, db_session)
         actor, _ = _caller(request)
         target = _parse_scope(scope_id)
-        _chain(cfg, target)
+        _chain(tree, target)
         if target.kind == "user" and target.name != actor:
             raise PermissionDeniedException("Only the user may read their own scope")
         rows = (await db_session.execute(
@@ -251,9 +336,10 @@ class ScopesController(Controller):
         db_session: AsyncSession,
     ) -> dict[str, Any]:
         cfg = _cfg(request)
+        tree = await _tree(request, db_session)
         actor, groups = _caller(request)
         target = _parse_scope(scope_id)
-        chain = _chain(cfg, target)
+        chain = _chain(tree, target)
         spec, known = await spec_for(db_session, key)
         if not known and target.kind != "user":
             await self._key_pending(request, db_session, cfg, key, target, chain, actor, groups)
@@ -331,9 +417,10 @@ class ScopesController(Controller):
         self, scope_id: str, key: str, request: Request, db_session: AsyncSession
     ) -> None:
         cfg = _cfg(request)
+        tree = await _tree(request, db_session)
         actor, groups = _caller(request)
         target = _parse_scope(scope_id)
-        chain = _chain(cfg, target)
+        chain = _chain(tree, target)
         spec, _known = await spec_for(db_session, key)
         snaps = await load_snapshots(db_session, chain, key)
         if not spec.allows(target.kind):
@@ -361,9 +448,10 @@ class ScopesController(Controller):
         db_session: AsyncSession,
     ) -> dict[str, Any]:
         cfg = _cfg(request)
+        tree = await _tree(request, db_session)
         actor, groups = _caller(request)
         target = _parse_scope(scope_id)
-        chain = _chain(cfg, target)
+        chain = _chain(tree, target)
         spec, _known = await spec_for(db_session, key)
         snaps = await load_snapshots(db_session, chain, key)
         try:
@@ -409,9 +497,10 @@ class ScopesController(Controller):
         self, scope_id: str, key: str, request: Request, db_session: AsyncSession
     ) -> None:
         cfg = _cfg(request)
+        tree = await _tree(request, db_session)
         actor, groups = _caller(request)
         target = _parse_scope(scope_id)
-        chain = _chain(cfg, target)
+        chain = _chain(tree, target)
         spec, _known = await spec_for(db_session, key)
         snaps = await load_snapshots(db_session, chain, key)
         try:
@@ -435,9 +524,10 @@ class ScopesController(Controller):
         key: str | None = None, limit: int = 100,
     ) -> list[dict[str, Any]]:
         cfg = _cfg(request)
+        tree = await _tree(request, db_session)
         actor, groups = _caller(request)
         target = _parse_scope(scope_id)
-        chain = _chain(cfg, target)
+        chain = _chain(tree, target)
         if target.kind == "user":
             if target.name != actor:
                 raise PermissionDeniedException("Only the user may read their own audit trail")
@@ -463,11 +553,12 @@ class SettingKeysController(Controller):
         self, request: Request, db_session: AsyncSession, status: str | None = None
     ) -> list[dict[str, Any]]:
         cfg = _cfg(request)
+        tree = await _tree(request, db_session)
         _actor, groups = _caller(request)
         if not any(
-            role_at_least(role_on(s, cfg.tree.chain_for(s), groups, cfg.facility_grants),
+            role_at_least(role_on(s, tree.chain_for(s), groups, cfg.facility_grants),
                           "maintainer")
-            for s in cfg.tree.scopes()
+            for s in tree.scopes()
         ):
             raise PermissionDeniedException("maintainer role required")
         q = select(SettingKeyRow).order_by(SettingKeyRow.key)
@@ -480,9 +571,10 @@ class SettingKeysController(Controller):
         self, key: str, data: ProposeBody, request: Request, db_session: AsyncSession
     ) -> dict[str, Any]:
         cfg = _cfg(request)
+        tree = await _tree(request, db_session)
         actor, groups = _caller(request)
         target = _parse_scope(data.scope)
-        chain = _chain(cfg, target)
+        chain = _chain(tree, target)
         if target.kind == "user" or not role_at_least(
             role_on(target, chain, groups, cfg.facility_grants), "maintainer"
         ):
