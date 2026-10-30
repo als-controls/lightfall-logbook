@@ -185,15 +185,21 @@ class ScopesController(Controller):
             chain = base.with_user(actor)
         except ValueError:
             raise PermissionDeniedException("Caller identity cannot name a user scope") from None
-        entitled = [
-            str(s) for s in cfg.tree.scopes()
-            if s.kind in ("beamline", "branch")
-            and role_on(s, cfg.tree.chain_for(s), groups, cfg.facility_grants) is not None
+        tree = [
+            {
+                "scope": str(s),
+                "parent": (f"beamline:{cfg.tree.branch_parent[s.name]}"
+                           if s.kind == "branch" else None),
+                "role": role_on(s, cfg.tree.chain_for(s), groups, cfg.facility_grants),
+            }
+            for s in cfg.tree.scopes() if s.kind in ("beamline", "branch")
         ]
+        entitled = [e["scope"] for e in tree if e["role"] is not None]
         return {
             "chain": [str(s) for s in chain],
             "roles": {str(s): _role_label(s, chain, actor, groups, cfg) for s in chain},
             "entitled": entitled,
+            "tree": tree,  # every beamline/branch with the caller's role (console binding)
             "facility_label": cfg.tree.label,
         }
 

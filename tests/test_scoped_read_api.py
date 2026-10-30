@@ -61,3 +61,16 @@ async def test_user_snapshot_only_for_owner(env):
 async def test_snapshot_unknown_scope_404(env, scope):
     tc, _ = env
     assert (await tc.get(f"/logbook/scopes/{scope}/settings", headers=ALICE)).status_code == 404
+
+
+async def test_chain_lists_the_scope_tree_with_the_callers_roles(env):
+    """The client's "This console" picker: every beamline and branch, and what the caller is."""
+    tc, _ = env
+    body = (await tc.get("/logbook/scopes/chain", headers=MAINT)).json()
+    assert body["tree"] == [
+        {"scope": "beamline:7.0.1", "parent": None, "role": "maintainer"},
+        {"scope": "beamline:8.3.2", "parent": None, "role": None},
+        {"scope": "branch:7.0.1.1", "parent": "beamline:7.0.1", "role": "maintainer"},
+    ]
+    alice = (await tc.get("/logbook/scopes/chain", headers=ALICE)).json()
+    assert [e["role"] for e in alice["tree"]] == [None, None, None]
