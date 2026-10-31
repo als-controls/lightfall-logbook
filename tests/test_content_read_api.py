@@ -105,3 +105,15 @@ async def test_history_newest_first_with_current_flag(env):
         (r2, True, "second"), (r1, False, "first")]
     missing = await tc.get(f"{BASE}/{BR}/content/agent/nope/history", headers=ALICE)
     assert missing.status_code == 404
+
+
+async def test_listing_and_history_include_declared_counts(env):
+    tc, factory, store = env
+    await seed_revision(factory, store, BR, "plugin", "xas_tools", make_bundle({"a.py": b"1"}),
+                        manifest={"file_count": 3, "uncompressed_size": 1234})
+    await seed_revision(factory, store, BR, "plan", "old", make_bundle({"b.py": b"2"}))
+    items = {i["name"]: i for i in (await tc.get(f"{BASE}/{BR}/content", headers=ALICE)).json()["items"]}
+    assert (items["xas_tools"]["file_count"], items["xas_tools"]["uncompressed_size"]) == (3, 1234)
+    assert (items["old"]["file_count"], items["old"]["uncompressed_size"]) == (None, None)
+    hist = (await tc.get(f"{BASE}/{BR}/content/plugin/xas_tools/history", headers=ALICE)).json()
+    assert (hist[0]["file_count"], hist[0]["uncompressed_size"]) == (3, 1234)

@@ -78,6 +78,9 @@ it checks the bytes' sha256 and compressed size and the uploader's declared size
 | POST | `/logbook/scopes/{scope}/content/{type}/{name}` | Publish (multipart `manifest` JSON + `bundle`); maintainer+ |
 | POST | `.../{type}/{name}/retract` / `restore` (`{"revision": n}`) | Take down / bring back; maintainer+ |
 
+Listing and history entries carry the publisher's declared `file_count` and
+`uncompressed_size` (null if not declared); clients enforce them when unpacking.
+
 `type` is `plan`, `plugin`, `agent` or `skill`; user scopes are refused. Limits come from the
 optional `[content]` table in `SCOPES_CONFIG` (see `deploy/scopes.example.toml`); admins of the
 target scope are exempt from all but `hard_max_bundle_bytes`. Changes publish

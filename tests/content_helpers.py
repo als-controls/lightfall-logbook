@@ -21,12 +21,13 @@ def make_bundle(files: dict[str, bytes]) -> bytes:
 
 async def seed_revision(factory: async_sessionmaker, store: BundleStore, scope: str,
                         type_: str, name: str, data: bytes, *, current: bool = True,
-                        published_by: str = "seed", message: str = "") -> int:
+                        published_by: str = "seed", message: str = "",
+                        manifest: dict | None = None) -> int:
     """Insert a revision (and its item) as if it had been published; returns its id."""
     sha = store.put(data)
     async with factory() as s:
         rev = ContentRevisionRow(scope=scope, type=type_, name=name, sha256=sha,
-                                 size=len(data), manifest={}, published_by=published_by,
+                                 size=len(data), manifest=manifest or {}, published_by=published_by,
                                  published_at=datetime.now(UTC), author=None,
                                  message=message, agent=False)
         s.add(rev)

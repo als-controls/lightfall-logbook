@@ -108,9 +108,11 @@ def _check_item(type_: str, name: str) -> None:
 
 
 def _revision_record(rev: ContentRevisionRow) -> dict[str, Any]:
+    declared = rev.manifest or {}  # the publisher's word; clients enforce it when unpacking
     return {"revision": rev.id, "sha256": rev.sha256, "size": rev.size,
             "published_by": rev.published_by, "published_at": _iso(rev.published_at),
-            "author": rev.author}
+            "author": rev.author, "file_count": declared.get("file_count"),
+            "uncompressed_size": declared.get("uncompressed_size")}
 
 
 async def _item(db_session: AsyncSession, scope: str, type_: str,
