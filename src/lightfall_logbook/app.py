@@ -26,7 +26,7 @@ from lightfall_logbook.auth import (
     keycloak_auth_enabled,
 )
 from lightfall_logbook.bundle_store import BundleStore
-from lightfall_logbook.content_api import ContentController
+from lightfall_logbook.content_api import content_controller
 from lightfall_logbook.events import LogbookEventPublisher
 from lightfall_logbook.image_store import ImageStore
 from lightfall_logbook.models import Base
@@ -122,7 +122,7 @@ def create_app(
             SettingsController,
             AuthController,
             ScopesController,
-            ContentController,
+            content_controller(scoped_config.content),
             SettingKeysController,
         ],
         on_startup=[on_startup],
