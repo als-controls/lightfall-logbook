@@ -63,6 +63,31 @@ assistant) are served from facility scope at `GET /.well-known/lightfall` withou
 Lightfall setup wizard can configure a fresh install before login. Secret-like keys can never be
 public.
 
+## Shared content
+
+Plans, plugins, agents and skills published to a facility, beamline or branch scope, so everyone
+who logs in there gets them. Each item `(scope, type, name)` points at its current immutable
+revision; a revision is a zip the client made, stored by sha256. The server never opens a bundle:
+it checks the bytes' sha256 and compressed size and the uploader's declared size and file count.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/logbook/scopes/{scope}/content` | Current items (`ETag` / `If-None-Match`); any signed-in user |
+| GET | `/logbook/scopes/{scope}/content/{type}/{name}/bundle?revision=` | Zip bytes (`X-Content-SHA256`) |
+| GET | `/logbook/scopes/{scope}/content/{type}/{name}/history` | Revisions, newest first |
+| POST | `/logbook/scopes/{scope}/content/{type}/{name}` | Publish (multipart `manifest` JSON + `bundle`); maintainer+ |
+| POST | `.../{type}/{name}/retract` / `restore` (`{"revision": n}`) | Take down / bring back; maintainer+ |
+
+`type` is `plan`, `plugin`, `agent` or `skill`; user scopes are refused. Limits come from the
+optional `[content]` table in `SCOPES_CONFIG` (see `deploy/scopes.example.toml`); admins of the
+target scope are exempt from all but `hard_max_bundle_bytes`. Changes publish
+`{scope, type, name, revision}` on NATS subject `lightfall.content.changed` and are audited
+(`key = content:<type>/<name>`). Nothing is deleted: retract only clears the current pointer.
+
+Bundles live in `CONTENT_STORAGE_DIR` (default `./content_bundles`). **Back it up together with
+`logbook.db`**: the database records revisions, the directory holds their bytes. Design:
+`lightfall/docs/superpowers/specs/2026-10-30-scoped-content-design.md`.
+
 ## Local Storage
 
 `lightfall_logbook.local_store.LocalStore` provides offline-first SQLite storage with sync-on-reconnect. Used by the Lightfall Qt client.
