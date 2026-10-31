@@ -20,3 +20,12 @@ branches = ["7.0.1.1", "7.0.1.2"]
 type = "str"
 scopes = ["branch", "user"]
 operator_writable = true
+
+# Optional shared-content limits (plans, plugins, agents, skills published to a scope).
+# Admins/owners of the target scope are exempt from the first three; nobody can exceed
+# hard_max_bundle_bytes, the largest upload the server accepts. Sizes in bytes.
+# [content]
+# max_bundle_bytes = 52428800          # 50 MiB compressed
+# max_uncompressed_bytes = 209715200   # 200 MiB, as declared by the uploader
+# max_files = 2000                     # as declared by the uploader
+# hard_max_bundle_bytes = 524288000    # 500 MiB

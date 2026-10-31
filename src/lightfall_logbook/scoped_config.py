@@ -78,12 +78,40 @@ class ScopeTree:
 
 
 @dataclass(frozen=True)
+class ContentPolicy:
+    """Limits on shared-content publishes (``[content]``). Admins of the target scope are
+    exempt from all but ``hard_max_bundle_bytes``, the largest request the server accepts."""
+
+    max_bundle_bytes: int = 50 * 2**20
+    max_uncompressed_bytes: int = 200 * 2**20
+    max_files: int = 2000
+    hard_max_bundle_bytes: int = 500 * 2**20
+
+
+def _content_policy(raw: object) -> ContentPolicy:
+    if not isinstance(raw, dict):
+        raise ValueError("[content] must be a table")
+    fields = set(ContentPolicy.__dataclass_fields__)
+    unknown = set(raw) - fields
+    if unknown:
+        raise ValueError(f"unknown [content] keys {sorted(unknown)}")
+    for key, value in raw.items():
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            raise ValueError(f"[content] {key} must be a positive integer")
+    policy = ContentPolicy(**raw)
+    if policy.max_bundle_bytes > policy.hard_max_bundle_bytes:
+        raise ValueError("[content] max_bundle_bytes exceeds hard_max_bundle_bytes")
+    return policy
+
+
+@dataclass(frozen=True)
 class ScopedConfig:
     tree: ScopeTree = field(default_factory=ScopeTree)
     facility_grants: dict[str, str] = field(
         default_factory=lambda: dict(DEFAULT_FACILITY_GRANTS)
     )
     seed: tuple[SettingSpec, ...] = ()
+    content: ContentPolicy = field(default_factory=ContentPolicy)
 
 
 def parse_scoped_config(text: str) -> ScopedConfig:
@@ -116,7 +144,8 @@ def parse_scoped_config(text: str) -> ScopedConfig:
     seed = tuple(
         spec_from_dict({"key": key, **fields}) for key, fields in data.get("seed", {}).items()
     )
-    return ScopedConfig(ScopeTree(label, tuple(beamlines), parent), grants, seed)
+    content = _content_policy(data["content"]) if "content" in data else ContentPolicy()
+    return ScopedConfig(ScopeTree(label, tuple(beamlines), parent), grants, seed, content)
 
 
 def load_scoped_config(path: str | os.PathLike[str] | None = None) -> ScopedConfig:
