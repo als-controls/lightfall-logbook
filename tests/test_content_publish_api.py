@@ -208,3 +208,17 @@ async def test_concurrent_publish_one_wins(env, monkeypatch):
         assert item.current_revision == 99          # the other writer's value stands
         revs = (await s.execute(select(ContentRevisionRow.id))).scalars().all()
         assert revs == [1]                          # no orphan revision of ours
+
+
+async def test_republishing_repairs_a_missing_bundle_file(env):
+    """Disk restored from an older backup: re-publishing the same bundle puts the bytes back."""
+    tc, _, _ = env
+    data = make_bundle({"a.py": b"1"})
+    await publish(tc, MAINT, data)
+    sha = hashlib.sha256(data).hexdigest()
+    (tc.app.state.bundle_store._root / sha[:2] / sha).unlink()
+    again = await publish(tc, MAINT, data)
+    assert again.status_code == 200 and again.json()["revision"] == 1
+    got = await tc.get(URL.format(scope=BR, type="plan", name="xafs_scan") + "/bundle",
+                       headers=ALICE)
+    assert got.status_code == 200 and got.content == data

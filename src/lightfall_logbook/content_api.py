@@ -220,7 +220,9 @@ class ContentController(Controller):
         if base is not None:
             current = await db_session.get(ContentRevisionRow, base)
             if current is not None and current.sha256 == sha256:
-                # A retry after a lost response: nothing new to record.
+                # A retry after a lost response: nothing new to record. Still store the
+                # bytes (a no-op when present), so re-publishing repairs a lost file.
+                _store(request).put(content)
                 return Response(content=_publish_record(scope, type_, name, current),
                                 status_code=200)
 
