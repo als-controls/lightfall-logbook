@@ -66,6 +66,10 @@ class Manifest(BaseModel):
         return value
 
 
+class RestoreBody(BaseModel):
+    revision: int
+
+
 def _too_large(detail: str) -> HTTPException:
     return HTTPException(status_code=413, detail=detail)
 
@@ -245,6 +249,57 @@ class ContentController(Controller):
         await _publish(request, CONTENT_SUBJECT,
                        {"scope": scope, "type": type_, "name": name, "revision": rev.id})
         return Response(content=_publish_record(scope, type_, name, rev), status_code=201)
+
+    async def _maintainer_item(self, request: Request, db_session: AsyncSession,
+                               scope_id: str, type_: str, name: str):
+        actor, groups = _caller(request)
+        target, chain = await _target(request, db_session, scope_id)
+        _check_item(type_, name)
+        if not role_at_least(role_on(target, chain, groups, _cfg(request).facility_grants),
+                             "maintainer"):
+            raise PermissionDeniedException(f"maintainer role required on {target}")
+        item = await _item(db_session, str(target), type_, name)
+        return actor, str(target), item
+
+    async def _point(self, request: Request, db_session: AsyncSession, actor: str,
+                     scope: str, type_: str, name: str, item: ContentItemRow,
+                     new: int | None, action: str) -> dict[str, Any]:
+        """Move the item's pointer to ``new`` (None = retracted), audited and announced."""
+        old = item.current_revision
+        record = {"scope": scope, "type": type_, "name": name, "revision": new}
+        if old == new:
+            return record  # nothing changed: no audit, no event
+        if not await _move_pointer(db_session, scope, type_, name, old, new):
+            await db_session.rollback()
+            raise _conflict()
+        add_audit(db_session, scope=scope, key=f"content:{type_}/{name}", action=action,
+                  old=old, new=new, actor=actor, agent=_is_agent(request))
+        await db_session.commit()
+        await _publish(request, CONTENT_SUBJECT, record)
+        return record
+
+    @post("/{type_:str}/{name:str}/retract", status_code=200)
+    async def retract(self, scope_id: str, type_: str, name: str, request: Request,
+                      db_session: AsyncSession) -> dict[str, Any]:
+        """Take an item down; its revisions stay in history."""
+        actor, scope, item = await self._maintainer_item(request, db_session, scope_id,
+                                                         type_, name)
+        return await self._point(request, db_session, actor, scope, type_, name, item,
+                                 None, "retract")
+
+    @post("/{type_:str}/{name:str}/restore", status_code=200)
+    async def restore(self, scope_id: str, type_: str, name: str, data: RestoreBody,
+                      request: Request, db_session: AsyncSession) -> dict[str, Any]:
+        """Make one of this item's earlier revisions current again."""
+        actor, scope, item = await self._maintainer_item(request, db_session, scope_id,
+                                                         type_, name)
+        rev = await db_session.get(ContentRevisionRow, data.revision)
+        if rev is None or (rev.scope, rev.type, rev.name) != (scope, type_, name):
+            raise _unprocessable(f"revision {data.revision} is not a revision of this item")
+        if not _store(request).exists(rev.sha256):
+            raise _unprocessable(f"revision {data.revision}'s bundle is missing from the store")
+        return await self._point(request, db_session, actor, scope, type_, name, item,
+                                 rev.id, "restore")
 
 
 def _publish_record(scope: str, type_: str, name: str,
