@@ -1,0 +1,18 @@
+[Unit]
+Description=Back up the Lightfall logbook (database snapshot + content bundles)
+After=lucid-logbook.service
+
+[Service]
+Type=oneshot
+User=lucid-logbook
+Group=lucid-logbook
+WorkingDirectory=/opt/lucid-logbook
+Nice=10
+IOSchedulingClass=idle
+ExecStart=/usr/bin/python3 /opt/lucid-logbook/deploy/backup_logbook.py \
+    --db /opt/lucid-logbook/logbook.db \
+    --bundles /opt/lucid-logbook/content_bundles \
+    --dest /var/backups/lucid-logbook \
+    --keep 14 \
+    --extra /opt/lucid-logbook/.env \
+    --extra /opt/lucid-logbook/scopes.toml

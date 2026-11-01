@@ -91,6 +91,24 @@ Bundles live in `CONTENT_STORAGE_DIR` (default `./content_bundles`). **Back it u
 `logbook.db`**: the database records revisions, the directory holds their bytes. Design:
 `lightfall/docs/superpowers/specs/2026-10-30-scoped-content-design.md`.
 
+## Backups
+
+`deploy/backup_logbook.py` (stdlib only) takes an online, integrity-checked snapshot of
+`logbook.db` (plus `.env` and `scopes.toml`), then mirrors `CONTENT_STORAGE_DIR`, and keeps the
+newest 14 snapshots. The database goes first: bundles are never deleted, so the later mirror
+holds every bundle a snapshot refers to. Install the daily timer:
+
+```bash
+sudo install -d -o lucid-logbook -g lucid-logbook -m 700 /var/backups/lucid-logbook
+sudo cp deploy/lucid-logbook-backup.{service,timer} /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now lucid-logbook-backup.timer
+sudo systemctl start lucid-logbook-backup.service   # one run now; see journalctl -u
+```
+
+Restore: stop `lucid-logbook`, copy a snapshot's `logbook.db` over the live one and
+`bundles/` into `CONTENT_STORAGE_DIR`, start it. The snapshots sit on the same disk, so they
+guard against a bad deploy or corruption, not disk loss (the VM backup covers that).
+
 ## Local Storage
 
 `lightfall_logbook.local_store.LocalStore` provides offline-first SQLite storage with sync-on-reconnect. Used by the Lightfall Qt client.
